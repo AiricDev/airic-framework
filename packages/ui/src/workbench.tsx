@@ -5,9 +5,9 @@ interface Trace { eventId: string; type: string; timestamp: string; actor: strin
 interface DefinitionSummary { id: string; title: string; revision: string }
 interface DefinitionFiles { revision: string; files: Record<string, string> }
 export interface ResultView { type: string; render(value: unknown): ReactNode }
-export interface AiricWorkbenchProps { apiBase?: string; resultViews?: readonly ResultView[]; defaultDefinitionId?: string; defaultDomainIds?: readonly string[] }
+export interface AiricWorkbenchProps { apiBase?: string; resultViews?: readonly ResultView[]; defaultDefinitionId?: string; defaultDomainIds?: readonly string[]; defaultInput?: unknown }
 
-export function AiricWorkbench({ apiBase = "/api", resultViews = [], defaultDefinitionId = "case-assistance", defaultDomainIds = ["case-management"] }: AiricWorkbenchProps) {
+export function AiricWorkbench({ apiBase = "/api", resultViews = [], defaultDefinitionId = "case-assistance", defaultDomainIds = ["case-management"], defaultInput = {} }: AiricWorkbenchProps) {
   const [works, setWorks] = useState<Work[]>([]);
   const [activeId, setActiveId] = useState<string>();
   const [trace, setTrace] = useState<Trace[]>([]);
@@ -38,7 +38,7 @@ export function AiricWorkbench({ apiBase = "/api", resultViews = [], defaultDefi
   const candidates = trace.filter((event) => event.type === "reflection.candidate");
   const renderedResult = useMemo(() => { const typed = active?.result as { type?: string } | undefined; return resultViews.find((view) => view.type === typed?.type)?.render(active?.result); }, [active?.result, resultViews]);
 
-  async function create(event: FormEvent) { event.preventDefault(); await act(async () => { const work = await checked<Work>(await post(`${apiBase}/works`, { definitionId: defaultDefinitionId, objective, input: {}, domainIds: defaultDomainIds })); setActiveId(work.id); await reload(); }); }
+  async function create(event: FormEvent) { event.preventDefault(); await act(async () => { const work = await checked<Work>(await post(`${apiBase}/works`, { definitionId: defaultDefinitionId, objective, input: defaultInput, domainIds: defaultDomainIds })); setActiveId(work.id); await reload(); }); }
   async function send(event: FormEvent) { event.preventDefault(); if (!activeId || !message.trim()) return; const sent = message; setMessage(""); await act(async () => { await checked(await post(`${apiBase}/works/${encodeURIComponent(activeId)}/messages`, { message: sent })); await reloadActive(); }); }
   async function startReflection() { if (!active) return; await act(async () => { const work = await checked<Work>(await post(`${apiBase}/works`, { definitionId: "reflection", objective: `Reflect on ${active.objective}`, input: { sourceWorkId: active.id }, domainIds: [] })); setActiveId(work.id); await reload(); }); }
   async function rebind() { if (!active) return; await act(async () => { await checked(await post(`${apiBase}/works/${encodeURIComponent(active.id)}/rebind`, {})); await reloadActive(); }); }

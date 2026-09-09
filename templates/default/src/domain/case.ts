@@ -22,6 +22,9 @@ export function updateCase(
   if (current.revision !== expectedRevision) {
     throw new CasePolicyError("RevisionConflict", `Expected revision ${expectedRevision}, found ${current.revision}`);
   }
+  if (changes.customerName === undefined && changes.email === undefined && changes.markReady === undefined) {
+    throw new CasePolicyError("NoEffectiveChange", "At least one supported case change is required");
+  }
   const next = {
     ...current,
     ...(changes.customerName ? { customerName: changes.customerName.trim() } : {}),

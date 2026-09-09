@@ -24,4 +24,4 @@ Open `http://127.0.0.1:4173`. The default is a clearly labelled simulated harnes
 - `create-airic`: generator built from the canonical default template.
 - `@airic/testing`: provider-neutral fakes and fixtures.
 
-Read [the integration guide](./docs/application-integration.md), [the implementation ledger](./docs/development-plan.md), and [the v0.3 design](./docs/airic-framework-technical-design.md).
+Read [the integration guide](./docs/application-integration.md), [the implementation ledger](./docs/development-plan.md), [the sanitized live-provider acceptance](./docs/live-provider-acceptance.md), and [the v0.3 design](./docs/airic-framework-technical-design.md).

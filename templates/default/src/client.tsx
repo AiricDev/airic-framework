@@ -5,6 +5,6 @@ import "@airic/ui/style.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <AiricWorkbench resultViews={[{ type: "case", render: (value) => <pre>{JSON.stringify(value, null, 2)}</pre> }]} />
+    <AiricWorkbench defaultInput={{ caseId: "demo" }} resultViews={[{ type: "case", render: (value) => <pre>{JSON.stringify(value, null, 2)}</pre> }]} />
   </StrictMode>,
 );

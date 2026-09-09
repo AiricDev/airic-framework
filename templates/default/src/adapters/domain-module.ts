@@ -23,7 +23,24 @@ export function createCaseDomain(repository: JsonCaseRepository, sourceRoot: str
       },
       {
         id: "case.update", title: "Update case", description: "Update a case using optimistic revision checking; marking ready requires customer name and valid email.", kind: "command", source: { path: "src/domain/case.ts", symbol: "updateCase" },
-        inputSchema: { type: "object", properties: { caseId: { type: "string" }, expectedRevision: { type: "number" }, changes: { type: "object" } }, required: ["caseId", "expectedRevision", "changes"] }, outputSchema: { type: "object" },
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            caseId: { type: "string" },
+            expectedRevision: { type: "number" },
+            changes: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                customerName: { type: "string" },
+                email: { type: "string" },
+                markReady: { type: "boolean" },
+              },
+            },
+          },
+          required: ["caseId", "expectedRevision", "changes"],
+        }, outputSchema: { type: "object" },
         invoke: async (context, input): Promise<CommandReceipt> => {
           if (!context.commandId) throw new Error("Trusted command identity is missing");
           try {

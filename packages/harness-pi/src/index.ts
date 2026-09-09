@@ -20,6 +20,7 @@ export interface PiHarnessOptions {
   model?: { provider: string; id: string };
   authPath?: string;
   modelsPath?: string;
+  endpoint?: string;
   apiKeys?: Readonly<Record<string, string>>;
   thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 }
@@ -110,6 +111,7 @@ export class PiHarness implements AgentHarness {
     });
     await resourceLoader.reload();
     const modelRuntime = await ModelRuntime.create({ ...(this.#options.authPath ? { authPath: this.#options.authPath } : {}), ...(this.#options.modelsPath ? { modelsPath: this.#options.modelsPath } : {}) });
+    if (this.#options.endpoint && this.#options.model) modelRuntime.registerProvider(this.#options.model.provider, { baseUrl: this.#options.endpoint });
     for (const [provider, key] of Object.entries(this.#options.apiKeys ?? {})) await modelRuntime.setRuntimeApiKey(provider, key);
     const model = this.#options.model ? modelRuntime.getModel(this.#options.model.provider, this.#options.model.id) : undefined;
     if (this.#options.model && !model) throw new Error(`Pi model not found: ${this.#options.model.provider}/${this.#options.model.id}`);
@@ -121,7 +123,7 @@ export class PiHarness implements AgentHarness {
       execute: async (toolCallId, params) => {
         try {
           const result = await tool.invoke(params, toolCallId);
-          return { content: [{ type: "text" as const, text: JSON.stringify(result) }], details: { result, error: false } as { result: unknown; error: boolean } };
+          return { content: [{ type: "text" as const, text: JSON.stringify(result ?? null) }], details: { result: result ?? null, error: false } as { result: unknown; error: boolean } };
         } catch (error) {
           return { content: [{ type: "text" as const, text: JSON.stringify({ error: error instanceof Error ? error.message : String(error) }) }], details: { result: undefined, error: true } as { result: unknown; error: boolean } };
         }

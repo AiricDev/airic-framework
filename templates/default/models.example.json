@@ -1,7 +1,7 @@
 {
   "providers": {
     "my-openai-compatible-provider": {
-      "baseUrl": "$AIRIC_API_ENDPOINT",
+      "baseUrl": "https://configured-at-runtime.invalid/v1",
       "api": "openai-completions",
       "apiKey": "$AIRIC_API_KEY",
       "models": [

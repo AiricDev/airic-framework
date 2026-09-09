@@ -9,4 +9,8 @@ describe("case domain", () => {
   it("rejects a stale revision", () => {
     expect(() => updateCase({ id: "one", status: "draft", revision: 3 }, {}, 2)).toThrow("Expected revision 2");
   });
+  it("rejects an empty or unsupported change instead of committing a new revision", () => {
+    expect(() => updateCase({ id: "one", status: "draft", revision: 1 }, {}, 1)).toThrow("At least one supported case change is required");
+    expect(() => updateCase({ id: "one", status: "draft", revision: 1 }, { status: "ready" } as never, 1)).toThrow("At least one supported case change is required");
+  });
 });

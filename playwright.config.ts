@@ -11,7 +11,7 @@ export default defineConfig({
   webServer: {
     command: "npm run dev --workspace @airic/template-default",
     url: "http://127.0.0.1:4173",
-    env: { AIRIC_DATA_DIR: testData },
+    env: { AIRIC_DATA_DIR: testData, AIRIC_HARNESS: "simulated" },
     reuseExistingServer: !process.env.CI,
   },
 });
