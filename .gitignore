@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+.airic/data/
+playwright-report/
+test-results/
+*.tgz
+artifacts/
+*.tsbuildinfo
+.DS_Store
+.env

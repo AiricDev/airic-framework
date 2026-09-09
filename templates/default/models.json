@@ -1,0 +1,25 @@
+{
+  "providers": {
+    "deepseek": {
+      "baseUrl": "$AIRIC_API_ENDPOINT",
+      "api": "openai-completions",
+      "apiKey": "$AIRIC_API_KEY",
+      "models": [
+        {
+          "id": "deepseek-v4-flash",
+          "name": "deepseek-v4-flash",
+          "reasoning": true,
+          "input": ["text"],
+          "contextWindow": 512000,
+          "maxTokens": 16384,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        }
+      ]
+    }
+  }
+}

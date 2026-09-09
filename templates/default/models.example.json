@@ -1,0 +1,25 @@
+{
+  "providers": {
+    "my-openai-compatible-provider": {
+      "baseUrl": "$AIRIC_API_ENDPOINT",
+      "api": "openai-completions",
+      "apiKey": "$AIRIC_API_KEY",
+      "models": [
+        {
+          "id": "my-model-id",
+          "name": "My model",
+          "reasoning": false,
+          "input": ["text"],
+          "contextWindow": 128000,
+          "maxTokens": 16384,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        }
+      ]
+    }
+  }
+}

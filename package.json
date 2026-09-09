@@ -1,0 +1,24 @@
+{
+  "name": "airic-framework-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": ["packages/*", "templates/default"],
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "build": "tsc -b && npm run build:assets",
+    "build:assets": "tsc -b packages/ui --force && vite build --config packages/ui/vite.config.ts && node packages/create-airic/scripts/copy-template.mjs && vite build --config templates/default/vite.config.ts",
+    "check": "npm run architecture:check && tsc -b && npm test",
+    "architecture:check": "node scripts/architecture-check.mjs",
+    "test": "vitest run",
+    "test:browser": "playwright test",
+    "pack:all": "node scripts/pack-all.mjs",
+    "verify:pack": "node scripts/verify-packed-app.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.55.0",
+    "@types/node": "24.3.0",
+    "typescript": "5.9.2",
+    "vitest": "3.2.4"
+  }
+}

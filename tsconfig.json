@@ -1,0 +1,13 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/framework" },
+    { "path": "packages/storage-files" },
+    { "path": "packages/testing" },
+    { "path": "packages/harness-pi" },
+    { "path": "packages/server" },
+    { "path": "packages/ui" },
+    { "path": "packages/create-airic" },
+    { "path": "templates/default" }
+  ]
+}

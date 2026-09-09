@@ -1,0 +1,31 @@
+{
+  "name": "@airic/template-default",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && vite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "node --env-file-if-exists=.env --enable-source-maps dist/main.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@airic/framework": "0.1.0",
+    "@airic/harness-pi": "0.1.0",
+    "@airic/server": "0.1.0",
+    "@airic/storage-files": "0.1.0",
+    "@airic/ui": "0.1.0",
+    "react": "19.1.1",
+    "react-dom": "19.1.1"
+  },
+  "devDependencies": {
+    "@airic/testing": "0.1.0",
+    "@types/react": "19.1.10",
+    "@types/react-dom": "19.1.7",
+    "@vitejs/plugin-react": "5.0.2",
+    "typescript": "5.9.2",
+    "vite": "7.1.4",
+    "vitest": "3.2.4"
+  }
+}
