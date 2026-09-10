@@ -12,17 +12,21 @@ export class DemoHarness implements AgentHarness {
       registeredTools: input.tools.map((tool) => tool.name),
     };
     await input.onDelivered(delivery);
+    if (["domain-model-smith", "operating-model-smith"].includes(input.envelope.workDefinition.id)) {
+      return { text: "This onboarding assistant needs the configured Pi harness and model before it can inspect or change project files." };
+    }
     if (input.envelope.workDefinition.id === "reflection") {
       const workInput = JSON.parse(input.envelope.observations.find((item) => item.id === "work")!.content) as { input: { sourceWorkId: string } };
       const readTrace = requireTool(input.tools, "airic_read_work_trace");
       const saveCandidate = requireTool(input.tools, "airic_record_reflection_candidate");
       const complete = requireTool(input.tools, "airic_complete_work");
       const events = await readTrace.invoke({ workId: workInput.input.sourceWorkId, reason: "Identify whether the operating model was delivered before domain rejection" }, this.#next()) as { eventId: string; type: string; payload: unknown }[];
-      const creation = events.find((event) => event.type === "work.created")?.payload as { definition?: { revision?: string } } | undefined;
+      const context = [...events].reverse().find((event) => event.type === "context.assembled")?.payload as { definition?: { gitHead?: string; digest?: string } } | undefined;
       const candidate = {
         targetKind: "operating-model",
         targetPath: "case-assistance/process.md",
-        baseRevision: creation?.definition?.revision ?? "unknown",
+        baseCommit: context?.definition?.gitHead,
+        baseContentDigest: context?.definition?.digest ?? "unknown",
         diff: "+ When the customer asks to submit early, name each missing fact before retrying readiness.",
         rationale: "The trace includes a domain rejection and the candidate makes the recovery guidance explicit without relaxing the invariant.",
         evidenceEventIds: events.filter((event) => event.type === "action.rejected" || event.type === "context.delivered").map((event) => event.eventId),

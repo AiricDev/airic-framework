@@ -1,8 +1,9 @@
-import { mkdtemp, readdir } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { FileRuntimeStore, VersionedDefinitionStore } from "@airic/storage-files";
+import { DirectoryDefinitionSource, FileRuntimeStore } from "@airic/storage-files";
+import { loadWorkDefinition } from "@airic/framework";
 import type { RuntimeEvent } from "@airic/framework";
 
 const event: RuntimeEvent = { kind: "trace.appended", event: { schemaVersion: 1, eventId: "e1", workId: "w1", type: "work.test", timestamp: "2026-01-01T00:00:00Z", actor: "test", payload: {} } };
@@ -48,19 +49,17 @@ describe("FileRuntimeStore", () => {
     await recovered.close();
   });
 
-  it("publishes immutable Work Definition revisions and can reopen an old revision", async () => {
+  it("reads Work Definitions directly from the current project directory", async () => {
     const directory = await mkdtemp(join(tmpdir(), "airic-definitions-"));
-    const definitions = new VersionedDefinitionStore(directory);
-    const baseFiles = {
-      "work.yml": "schemaVersion: 1\nid: assist\ntitle: Assist\ndocuments:\n  - id: process\n    path: process.md\n    title: Process\n    role: process\n    load: required\ncompletion:\n  requiredCapabilities: []\n",
-      "process.md": "First version",
-    };
-    const first = await definitions.publish({ id: "assist", files: baseFiles });
-    const second = await definitions.publish({ id: "assist", baseRevision: first.revision, files: { ...baseFiles, "process.md": "Second version" } });
-    expect(second.revision).not.toBe(first.revision);
-    expect(await definitions.readDocument("assist", "process.md", first.revision)).toBe("First version");
-    expect(await definitions.readDocument("assist", "process.md")).toBe("Second version");
-    await expect(definitions.publish({ id: "assist", baseRevision: first.revision, files: baseFiles })).rejects.toThrow("revision conflict");
+    const root = join(directory, "work-definitions", "assist"); await mkdir(root, { recursive: true });
+    await writeFile(join(root, "work.yml"), "schemaVersion: 1\nid: assist\ntitle: Assist\ndocuments:\n  - id: process\n    path: process.md\n    title: Process\n    role: process\n    load: required\ncompletion:\n  requiredCapabilities: []\n");
+    await writeFile(join(root, "process.md"), "First content");
+    const definitions = new DirectoryDefinitionSource(join(directory, "work-definitions"), { gitRoot: directory });
+    const first = await loadWorkDefinition(definitions, "assist");
+    await writeFile(join(root, "process.md"), "Second content");
+    const second = await loadWorkDefinition(definitions, "assist");
+    expect(second.digest).not.toBe(first.digest);
+    expect(second.required[0]?.content).toBe("Second content");
   });
 
   it("rebuilds a disposable snapshot anchored to the journal", async () => {

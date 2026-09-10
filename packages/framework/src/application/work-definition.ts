@@ -19,14 +19,18 @@ const manifestSchema = z.object({
   description: z.string().default(""),
   compatibleDomains: z.array(z.object({ id: z.string(), release: z.string().optional() })).default([]),
   documents: z.array(documentSchema).min(1),
-  completion: z.object({ requiredCapabilities: z.array(z.string()).default([]) }).default({ requiredCapabilities: [] }),
+  completion: z.object({
+    requiredCapabilities: z.array(z.string()).default([]),
+    requiredTools: z.array(z.string()).default([]),
+  }).default({ requiredCapabilities: [], requiredTools: [] }),
 });
 
 export type WorkDefinitionManifest = z.infer<typeof manifestSchema>;
 export interface LoadedDocument extends z.infer<typeof documentSchema> { content: string; digest: string }
 export interface WorkDefinition {
   manifest: WorkDefinitionManifest;
-  revision: string;
+  digest: string;
+  source: { gitHead?: string; dirty: boolean };
   required: readonly LoadedDocument[];
   discoverable: readonly Omit<LoadedDocument, "content">[];
   documents: ReadonlyMap<string, LoadedDocument>;
@@ -36,8 +40,8 @@ function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-export async function loadWorkDefinition(source: DefinitionSource, definitionId: string, requestedRevision?: string): Promise<WorkDefinition> {
-  const raw = await source.readManifest(definitionId, requestedRevision);
+export async function loadWorkDefinition(source: DefinitionSource, definitionId: string): Promise<WorkDefinition> {
+  const raw = await source.readManifest(definitionId);
   const value = typeof raw === "string" ? YAML.parse(raw) : raw;
   const manifest = manifestSchema.parse(value);
   if (manifest.id !== definitionId) throw new Error(`Definition id mismatch: expected ${definitionId}, got ${manifest.id}`);
@@ -51,7 +55,7 @@ export async function loadWorkDefinition(source: DefinitionSource, definitionId:
   }
   const docs = new Map<string, LoadedDocument>();
   for (const spec of manifest.documents) {
-    const content = await source.readDocument(definitionId, spec.path, requestedRevision);
+    const content = await source.readDocument(definitionId, spec.path);
     docs.set(spec.id, { ...spec, content, digest: digest(content) });
   }
   const requiredIds = new Set(manifest.documents.filter((doc) => doc.load === "required").map((doc) => doc.id));
@@ -61,10 +65,18 @@ export async function loadWorkDefinition(source: DefinitionSource, definitionId:
     }
   };
   for (const id of [...requiredIds]) visit(id);
-  const revision = digest(JSON.stringify([...docs.values()].map(({ content: _content, ...doc }) => doc).sort((a, b) => a.id.localeCompare(b.id))));
+  const packageFiles = [];
+  for (const path of await source.listDefinitionFiles(definitionId)) {
+    const content = path === "work.yml"
+      ? (typeof raw === "string" ? raw : JSON.stringify(value))
+      : await source.readDocument(definitionId, path);
+    packageFiles.push({ path, digest: digest(content) });
+  }
+  const packageDigest = digest(JSON.stringify(packageFiles.sort((a, b) => a.path.localeCompare(b.path))));
   return {
     manifest,
-    revision,
+    digest: packageDigest,
+    source: await source.status?.() ?? { dirty: false },
     required: [...requiredIds].map((id) => docs.get(id)!),
     discoverable: [...docs.values()].filter((doc) => !requiredIds.has(doc.id)).map(({ content: _content, ...doc }) => doc),
     documents: docs,

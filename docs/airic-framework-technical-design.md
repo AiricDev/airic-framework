@@ -1,10 +1,10 @@
 # Airic Framework 独立项目技术设计
 
-版本：0.3 · 日期：2026-09-09 · 状态：首版实现基线（实施进度见 `development-plan.md`）
+版本：0.4 · 日期：2026-09-10 · 状态：Git 工作树 Operating Model 实现基线（实施进度见 `development-plan.md`）
 
-本文完整描述 Airic Framework 的职责、公共协议、运行机制、项目结构和演进方式，可移入独立框架仓库使用。接口与目录均为提案；包名暂定。本文不声明现有原型已实现这些合同，不包含某个行业应用的领域设计。
+本文描述 Airic Framework 当前实现基线的职责、公共协议、运行机制、项目结构和演进方式。验证状态以 `development-plan.md` 与仓库测试为准；本文不包含某个行业应用的领域设计。
 
-本版将交付形态确定为“运行内核 + 文件存储 + 默认工作台 + 项目脚手架 + 开发 skill”，并把框架运行模型收缩为 Work 与跨 Domain 边界的 Action。ContextEnvelope 和 trace 负责统一运行与归因，session、内部步骤、交互确认和压缩仍归 harness。框架自身不依赖数据库，首版以单主机、单写入进程为约束。CLI、UI 和 skill 均是待实现的正式交付物，不是已经可用的功能。
+本版交付“运行内核 + 文件存储 + 默认工作台 + 项目脚手架 + 开发 skill”，并把框架运行模型收缩为 Work 与跨 Domain 边界的 Action。ContextEnvelope 和 trace 负责统一运行与归因，session、内部步骤、交互确认和压缩仍归 harness。框架自身不依赖数据库，首版以单主机、单写入进程为约束。
 
 ## 1. 定位与核心决策
 
@@ -25,14 +25,14 @@ Airic Framework 把领域代码与文档定义的工作连接起来，使 Agent 
 | --- | --- |
 | 项目边界 | 独立源码仓库、独立测试与版本发布；应用通过公开包使用框架 |
 | 运行方式 | TypeScript 运行内核，由生成的应用服务装配；内置工作台通过 API 接入 |
-| 默认环境 | Node.js 24、单主机、本地文件存储、一个持有写入锁的 runtime；框架不要求数据库 |
+| 默认环境 | Node.js 24、Git、单主机、本地文件存储、一个持有写入锁的 runtime；框架不要求数据库 |
 | Agent Harness | 首个适配器采用 Pi；框架公共类型不暴露 Pi 类型 |
 | 业务编排 | Agent 按 Markdown Process 决定下一步，框架不编译业务运行图 |
 | 领域接入 | 应用注册公开 Use Cases，并提供对应版本的领域源码与阅读入口 |
 | 业务存储 | 由应用领域拥有；框架存储不容纳通用化的业务实体表 |
 | 改进闭环 | Reflection 产出 Operating Model、Domain Model 或关联变更的候选文件/diff；不建立提案状态机 |
 | 用户界面 | 首版自带可运行的工作台：对话、派生运行状态、成果、harness 交互与改进；允许应用扩展 |
-| 项目创建 | 脚手架生成应用、示例领域、工作定义、UI 装配与测试，创建后即可启动 |
+| 项目创建 | 脚手架生成应用、两个 Smith、示例领域、工作定义、UI 装配与测试，并创建 Git 初始提交 |
 | 开发文档 | 随版本交付开发 skill 与引用文档，供人及其他编程 Agent 使用 |
 
 独立仓库能约束依赖与发布边界，但会增加版本兼容和联调成本。首版让应用消费框架包、默认 UI 和模板，不要求另行部署框架平台。内核保持可脱离 UI 使用，完整产品则必须包含 UI，不能将其留作应用开发者的前置工作。
@@ -115,7 +115,7 @@ flowchart TB
 | --- | --- | --- |
 | 行业业务实体与业务 revision | 应用领域 | VersionedRef、授权查询、命令回执 |
 | 领域源码、注释、测试及软件 release | 应用工程项目 | 绑定 release 的只读源码包 |
-| Work Definition 已发布文件包 | 框架定义管理用例，通过存储端口保存 | 不可变 revision、manifest、文件引用 |
+| Work Definition 当前文件包 | 应用 Git 工作树 | 单一 `work-definitions/` 目录；Git 管理长期历史，Airic 每轮记录交付证据 |
 | Work | 框架 | 持久目标、定义绑定、成果引用和总体结束状态 |
 | Action 请求及投递观察 | 框架调用领域 | 关联领域回执，恢复未完成调用 |
 | 已提交命令的权威业务回执与业务审计 | 应用领域 | 通过接入端口查询或导入，不另造独立业务真相 |
@@ -123,9 +123,9 @@ flowchart TB
 | 对行业动作的最终批准有效性 | 应用领域及其认可的授权机制 | 作为领域对象或可信调用材料，由用例在提交时验证 |
 | ContextEnvelope 与 Canonical Trace | 框架 | 记录实际上下文来源、运行事实及业务回执引用 |
 | Harness session、checkpoint、缓存与压缩摘要 | Harness adapter | 自行持久化；影响推理时向 trace 报告来源和 digest |
-| Reflection 候选及采用结果 | 目标文档/代码项目 | 框架 trace 关联候选 revision 与实际生效 release |
+| Reflection 候选及采用结果 | 目标文档/代码项目 | 框架 trace 关联候选 diff 与 Git commit 或实际生效的 Domain release |
 
-框架状态保存到项目的数据目录，结构化记录、对话、版本化文档和附件都以文件持久化。应用独立拥有业务存储，即使同样选择文件，也有自己的命名空间与提交合同。领域 Artifact 仍由应用保存，框架仅关联其引用，不要求复制应用已有文件。文件目录布局与一致性约定见第 12 节。
+框架状态保存到项目的数据目录，结构化记录、对话、交付过的文档证据和附件都以文件持久化。Operating Model 本身不复制进框架数据目录。应用独立拥有业务存储，即使同样选择文件，也有自己的命名空间与提交合同。领域 Artifact 仍由应用保存，框架仅关联其引用，不要求复制应用已有文件。文件目录布局与一致性约定见第 12 节。
 
 ## 5. Domain 接入协议
 
@@ -281,15 +281,15 @@ Manifest 只定义识别、依赖、装配和接受要求；Markdown 正文描�
 
 Package input schema 定义一次 Work 接受的启动信息，不重定义领域实体结构；可引用已发布的领域 schema。业务校验仍在 Use Case 中执行。
 
-### 6.3 加载与发布
+### 6.3 工作树加载与 Git 管理
 
-必需文档进入每次新装配的上下文；按需文档提供目录和寻址入口。被加载的文档版本、路径和原因写入该轮 ContextEnvelope 及 `context.assembled` trace。README、样例和原始附件不会因扩展名或所在目录自动成为指令。
+必需文档进入每次新装配的上下文；按需文档提供目录和寻址入口。每次推理前重新读取当前 Git 工作树。被加载文档的路径、内容摘要、Git HEAD、dirty 状态和内容对象引用写入该轮 ContextEnvelope 及 `context.assembled` trace。README、样例和原始附件不会因扩展名或所在目录自动成为指令。
 
-依赖包在发布时固定 revision。新建文件仅在被声明或显式作为参考加载后参与执行。解析结果是源文件的派生视图，不另存可独立修改的定义副本。
+新建文件仅在 `work.yml` 中声明或显式作为参考加载后参与执行。解析结果是源文件的派生视图，不另存可修改的定义副本。未提交变更会影响 open Work 的下一轮；前一轮实际交付内容仍可从 trace evidence 还原。
 
-发布检查包括 manifest/schema、引用完整性、路径安全、依赖和能力兼容、必需资源及选择的案例验证。包内路径必须落在包根目录内，防止解包路径穿越或符号链接逃逸。包不能加载任意宿主代码。
+检查包括 manifest/schema、引用完整性、路径安全、依赖和能力兼容、必需资源及选择的案例验证。包内路径必须落在包根目录内，防止路径穿越或符号链接逃逸。包不能加载任意宿主代码。
 
-保存候选、验证、批准和发布是不同事实。发布绑定精确候选及检查结果。无效草稿可以保存继续编辑，但不能作为有效定义启动正式 Work。试运行绑定明确候选与隔离领域实例。
+保存、验证、人工审阅和 Git commit 是不同事实。Airic 不代替 Git 创建 definition revision，也不自动 commit。无效工作树内容会阻止新的上下文装配；用户通过普通 Git diff、commit 和 rollback 管理变更。
 
 ## 7. 最小框架模型
 
@@ -297,10 +297,10 @@ Package input schema 定义一次 Work 接受的启动信息，不重定义领�
 
 | 概念 | 独立不变量 |
 | --- | --- |
-| Work | 一次面向用户的工作，固定目标、输入、Work Definition revision、Domain binding、成果引用及总体结束状态 |
+| Work | 一次面向用户的工作，固定目标、输入、Work Definition ID、Domain binding、成果引用及总体结束状态；Definition 内容每轮从工作树装配 |
 | Action | 一次跨越 Domain Capability 边界的命令意图，固定命令身份、输入摘要、目标 revision、调用身份与领域回执；可有多次传输和对账观察 |
 
-Work Definition、DomainModule 是版本化协议。`ContextEnvelope` 和 `TraceEvent` 是不可变的运行记录/值，不是拥有独立生命周期的 Entity。Reflection 产生的候选文件或代码 diff 由其目标项目管理。
+Work Definition 是 Git 管理的文件协议，DomainModule 是 release 绑定的版本化协议。`ContextEnvelope` 和 `TraceEvent` 是不可变的运行记录/值，不是拥有独立生命周期的 Entity。Reflection 产生的候选文件或代码 diff 由其目标项目管理。
 
 以下词汇可以出现在 Work Definition、Agent 消息、harness 事件或 UI 中，但框架不建立对应 Repository、聚合或状态机：ProcessRun、WorkItem、Execution、DecisionRequest、Decision、Approval、Plan、Delegation、Checkpoint、Summary。即使 harness 为恢复而持久保存这些概念，它们仍属于该 harness 的实现。
 
@@ -310,12 +310,12 @@ Work Definition、DomainModule 是版本化协议。`ContextEnvelope` 和 `Trace
 
 ### 8.1 一次工作如何运行
 
-1. 宿主提交可信主体、目标、Work Definition revision、输入、对象引用和可委托范围；框架创建或打开 Work。
+1. 宿主提交可信主体、目标、Work Definition ID、输入、对象引用和可委托范围；框架验证当前文件包并创建或打开 Work。
 2. 每次 Agent 开始推理前，runtime 调用统一 Context Assembly，生成本轮不可变的 `ContextEnvelope` 并写入 `context.assembled` trace。
 3. harness 接收 envelope、受控 Domain Capability gateway 和 trace sink，使用自己的 session、turn、内部任务、压缩、等待和恢复机制运行 Agent。
 4. Agent 可以阅读方法与领域代码、查询业务状态、与用户交流并调整工作路径。只有发起领域 Command 时才创建 Action，并经过第 9 节的提交协议。
 5. harness 将消息、工具、内部交互和结果以规范化 trace 事件或带 provider 标识的原始附件交回；框架不据此重建它的内部对象。
-6. Agent 或用户提交工作成果；定义中声明的确定性完成检查在实际绑定版本上执行，Work 随结果保持打开、完成或取消。
+6. Agent 或用户提交工作成果；定义中声明的确定性完成检查在当时的当前文件包上执行，Work 随结果保持打开、完成或取消。
 
 runtime 统一“何时装配上下文、如何开放领域能力、哪些事实写入 trace、如何提交 Action”，不统一 Agent 必须走哪些步骤，也不实现业务流程调度器。
 
@@ -383,7 +383,7 @@ Context Assembly 是框架 application 层的统一用例，不是各 harness �
 
 装配输入包括：
 
-- Work 的目标、输入、成果引用以及固定的 Work Definition revision。
+- Work 的目标、输入、成果引用、Work Definition ID，以及当前 Git 工作树加载得到的文档包。
 - Work Definition 中必需文档、显式选用的方法、已加载的按需文档和可发现目录。
 - Domain release/buildId、相关源码入口、授权后的 Query 观察、能力 schema 与实际可调用集合。
 - 宿主建立的主体、范围和能力边界。
@@ -404,7 +404,7 @@ interface ContextEnvelope {
   workId: string;
   sequence: number;
   assemblerVersion: string;
-  workDefinition: VersionedRef;
+  workDefinition: { id: string; digest: string; gitHead?: string; dirty: boolean };
   domainBindings: readonly DomainBindingRef[];
   instructions: readonly ContextBlock[];
   observations: readonly ContextBlock[];
@@ -419,7 +419,7 @@ interface ContextProvenance {
   source: SourceLocator | TraceLocator;
   reason: "required" | "selected" | "retrieved" | "tool-bound" | "work" | "external";
   authority: "system" | "operating-model" | "domain" | "user" | "evidence" | "runtime";
-  revisionOrDigest: string;
+  versionOrDigest: string;
   renderedAs: "instruction" | "observation" | "catalog" | "tool";
   truncated?: boolean;
 }
@@ -427,7 +427,7 @@ interface ContextProvenance {
 
 Envelope 是语义结构，不强制所有 harness 使用相同的 prompt 字符串。adapter 负责稳定序列化，并返回 `context.delivered` 记录：envelope digest、实际注入位置、工具注册结果、adapter/version，以及 harness 额外加入或转换的上下文。若 adapter 不能证明必需内容和工具已实际交付，则不能宣称本轮受该 Operating Model 管理。
 
-按需读取产生 `context.retrieved` trace，包含候选、选择理由、实际文件 revision 与内容摘要；下次推理重新组装 envelope。这样反思可以区分“规则不存在”“存在但没有路由进来”“已经交付但 Agent 没有遵循”。
+按需读取产生 `context.retrieved` trace，包含候选、选择理由、实际文件内容摘要；下次推理从当前工作树重新组装 envelope。这样反思可以区分“规则不存在”“存在但没有路由进来”“已经交付但 Agent 没有遵循”。
 
 ### 10.3 Harness 端口
 
@@ -459,11 +459,11 @@ Reflection 使用一份文档定义的方法处理 Work trace、领域结果、�
 - Domain：实体、值对象、不变量、Domain Policy、Use Cases、注释和业务合同测试。
 - 关联变更：一个业务概念的调整同时要求领域代码与工作方法修改。
 
-Reflection 本身可以作为一个普通 Work 执行；其中的归因步骤、审阅问题和采用建议仍是文档与 Agent 行为，不建立 ReflectionRun 或 ChangeProposal Entity。结果是可审阅的文件/diff及一份说明，包含问题、证据、替代解释、目标文件/符号、基础 revision、语义变化、回归案例、兼容影响和验证结果。
+Reflection 本身可以作为一个普通 Work 执行；其中的归因步骤、审阅问题和采用建议仍是文档与 Agent 行为，不建立 ReflectionRun 或 ChangeProposal Entity。结果是可审阅的文件/diff及一份说明，包含问题、证据、替代解释、目标文件/符号、基础 Git commit/内容摘要、语义变化、回归案例、兼容影响和验证结果。
 
-文档候选由定义发布机制或普通 Git 审阅采用；领域代码候选通过应用工程流程测试、审阅和发布。候选不能立即改变产生它的当前运行。关联候选可以共同审阅，但两类发布物各自生效并记录版本；无法保证同时发布时，不声称原子切换。
+文档候选由普通 Git 审阅采用；领域代码候选通过应用工程流程测试、审阅和发布。工作树中的文档修改会影响下一轮上下文，但不追溯改变已经交付的 envelope。关联候选可以共同审阅，但 Operating Model commit 与 Domain release 各自生效；无法保证同时发布时，不声称原子切换。
 
-采用或拒绝结果作为后续 trace/evidence 关联回原 Work 与候选 revision，而不是进入框架通用状态机。代码合并不等于部署，文档保存不等于已发布；未来运行只有实际绑定新 release/revision 才算验证了候选。
+采用或拒绝结果作为后续 trace/evidence 关联回原 Work、Git commit 或 Domain release，而不是进入框架通用状态机。代码 commit 不等于部署；Operating Model 的行为验证来自后续实际交付的工作树内容与 trace。
 
 保留原始案例和人的裁定。Agent 遭遇领域拒绝本身不能证明规则错误；不能为了通过测试简单放宽不变量，或同时改掉预期结果。Reflection 可以提出框架自身代码与方法的修改，但当前运行仍受现行代码、文档和工程发布权限约束。
 
@@ -686,7 +686,7 @@ airic-framework/
 
 ## 17. 版本、联调与兼容
 
-区分框架软件版本、存储格式版本、Work Definition revision、Domain release/buildId 和业务对象 revision。运行事件及 manifest 也具有 schema 版本，不能用一个“系统版本”代替。
+区分框架软件版本、存储格式版本、Work Definition digest/Git 状态、Domain release/buildId 和业务对象 revision。运行事件及 manifest 也具有 schema 版本，不能用一个“系统版本”代替。
 
 首版框架处于 `0.x`，应用锁定精确包版本。升级同时检查内核、默认 UI、server、skill、模板和旧数据读取；迁移须先备份，在副本上验证，不自动覆盖原始 journal。脚手架生成的应用代码由用户拥有，升级依赖不重新生成并覆盖这些文件。
 

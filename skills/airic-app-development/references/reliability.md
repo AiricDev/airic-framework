@@ -4,4 +4,4 @@ An Action is persisted before command dispatch. Repeating transport for the same
 
 Framework runtime files use an exclusive writer lock, immutable hash-chained commits and content-addressed objects. A crash can leave a lock; inspect it and break it only with the exact observed token after confirming the owner is gone. Close the writer before backup and verify replay on a copy.
 
-Track framework version, storage format, Work Definition revision, Domain release/build ID and business revision separately. Old Action reconciliation uses its original command identity and release. New calls after an implementation change require Work rebinding.
+Track framework version, storage format, Work Definition package digest/Git state, Domain release/build ID and business revision separately. Preserve the exact Work Definition documents delivered on each turn as content-addressed trace evidence. Old Action reconciliation uses its original command identity and release; current operating-model files do not alter that domain binding.

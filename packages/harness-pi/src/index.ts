@@ -13,6 +13,10 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { renderContextEnvelope, type AgentHarness, type ContextEnvelope, type DeliveryRecord, type HarnessEvent, type HarnessTool } from "@airic/framework";
+import { createWorkspaceTools, type WorkspacePolicy } from "./workspace.js";
+
+export { readWorkspaceStatus } from "./workspace.js";
+export type { WorkspaceCheck, WorkspaceGrant, WorkspacePolicy } from "./workspace.js";
 
 export interface PiHarnessOptions {
   cwd: string;
@@ -23,6 +27,7 @@ export interface PiHarnessOptions {
   endpoint?: string;
   apiKeys?: Readonly<Record<string, string>>;
   thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  workspace?: WorkspacePolicy;
 }
 
 interface ActiveCall {
@@ -31,7 +36,7 @@ interface ActiveCall {
   onDelivered(record: DeliveryRecord): Promise<void>;
   onEvent(event: HarnessEvent): Promise<void>;
 }
-interface SessionBinding { session: AgentSession; active: ActiveCall; disposeSubscription: () => void }
+interface SessionBinding { session: AgentSession; active: ActiveCall; disposeSubscription: () => void; flush(): Promise<void> }
 
 export class PiHarness implements AgentHarness {
   static readonly adapterVersion = "0.1.0+pi-0.80.10";
@@ -40,7 +45,7 @@ export class PiHarness implements AgentHarness {
   readonly #creating = new Map<string, Promise<SessionBinding>>();
 
   constructor(options: PiHarnessOptions) { this.#options = { ...options, cwd: resolve(options.cwd), sessionDirectory: resolve(options.sessionDirectory) }; }
-  capabilities() { return { resume: true, interrupt: true, contextHook: true, compactionTrace: true }; }
+  capabilities() { return { resume: true, interrupt: true, contextHook: true, compactionTrace: true, workspaceDefinitions: this.#options.workspace?.grants.map((grant) => grant.definitionId) ?? [] }; }
 
   async run(input: {
     workId: string; message: string; envelope: ContextEnvelope; tools: readonly HarnessTool[]; refreshContext(): Promise<ContextEnvelope>; signal?: AbortSignal;
@@ -57,6 +62,7 @@ export class PiHarness implements AgentHarness {
     input.signal?.addEventListener("abort", abort, { once: true });
     try {
       await binding.session.prompt(input.message);
+      await binding.flush();
       return { text };
     } finally {
       stop();
@@ -84,7 +90,9 @@ export class PiHarness implements AgentHarness {
   async #createBinding(workId: string, tools: readonly HarnessTool[], active: ActiveCall): Promise<SessionBinding> {
     const sessionDirectory = join(this.#options.sessionDirectory, workId);
     await mkdir(sessionDirectory, { recursive: true });
+    const workspaceTools = this.#options.workspace ? await createWorkspaceTools({ policy: this.#options.workspace, definitionId: active.envelope.workDefinition.id, stateDirectory: sessionDirectory }) : [];
     const holder: { active: ActiveCall } = { active };
+    let eventWrites = Promise.resolve();
     const resourceLoader = new DefaultResourceLoader({
       cwd: this.#options.cwd,
       agentDir: getAgentDir(),
@@ -98,7 +106,7 @@ export class PiHarness implements AgentHarness {
             await holder.active.onEvent({ type: "context-change", payload: { hook: "context", envelopeDigest: holder.active.envelope.digest, messageCount: event.messages.length } });
           });
           pi.on("before_provider_request", async (event) => {
-            await holder.active.onDelivered(describePiBridge(holder.active.envelope, tools, event.payload).delivery);
+            await holder.active.onDelivered(describePiBridge(holder.active.envelope, tools, event.payload, workspaceTools.map((tool) => tool.name)).delivery);
           });
           pi.on("session_before_compact", async (event) => {
             await holder.active.onEvent({ type: "context-change", payload: { hook: "session_before_compact", preparationDigest: digest(JSON.stringify(event.preparation)) } });
@@ -121,6 +129,7 @@ export class PiHarness implements AgentHarness {
       description: tool.description,
       parameters: Type.Unsafe(tool.inputSchema),
       execute: async (toolCallId, params) => {
+        await eventWrites;
         try {
           const result = await tool.invoke(params, toolCallId);
           return { content: [{ type: "text" as const, text: JSON.stringify(result ?? null) }], details: { result: result ?? null, error: false } as { result: unknown; error: boolean } };
@@ -134,30 +143,30 @@ export class PiHarness implements AgentHarness {
       sessionManager: SessionManager.continueRecent(this.#options.cwd, sessionDirectory),
       resourceLoader,
       modelRuntime,
-      customTools,
+      customTools: [...customTools, ...workspaceTools],
       noTools: "builtin",
       ...(model ? { model } : {}),
       ...(this.#options.thinking ? { thinkingLevel: this.#options.thinking } : {}),
     });
     const disposeSubscription = created.session.subscribe((event) => {
-      if (event.type === "tool_execution_start") void holder.active.onEvent({ type: "tool", providerEventId: event.toolCallId, payload: { phase: "start", name: event.toolName } });
-      if (event.type === "tool_execution_end") void holder.active.onEvent({ type: "tool", providerEventId: event.toolCallId, payload: { phase: "end", name: event.toolName, isError: event.isError } });
-      if (event.type === "agent_settled") void holder.active.onEvent({ type: "status", payload: { state: "settled" } });
+      if (event.type === "tool_execution_start") eventWrites = eventWrites.then(() => holder.active.onEvent({ type: "tool", providerEventId: event.toolCallId, payload: { phase: "start", name: event.toolName, input: safeToolInput(event.toolName, event.args) } }));
+      if (event.type === "tool_execution_end") eventWrites = eventWrites.then(() => holder.active.onEvent({ type: "tool", providerEventId: event.toolCallId, payload: { phase: "end", name: event.toolName, isError: event.isError, result: safeToolResult(event.result) } }));
+      if (event.type === "agent_settled") eventWrites = eventWrites.then(() => holder.active.onEvent({ type: "status", payload: { state: "settled" } }));
     });
-    const binding: SessionBinding = { session: created.session, active: holder.active, disposeSubscription };
+    const binding: SessionBinding = { session: created.session, active: holder.active, disposeSubscription, flush: () => eventWrites };
     Object.defineProperty(binding, "active", { get: () => holder.active, set: (value: ActiveCall) => { holder.active = value; } });
     return binding;
   }
 }
 
-export function describePiBridge(envelope: ContextEnvelope, tools: readonly HarnessTool[], providerPayload: unknown): { systemPrompt: string; delivery: DeliveryRecord; hooks: readonly string[] } {
+export function describePiBridge(envelope: ContextEnvelope, tools: readonly HarnessTool[], providerPayload: unknown, additionalToolNames: readonly string[] = []): { systemPrompt: string; delivery: DeliveryRecord; hooks: readonly string[] } {
   return {
     systemPrompt: renderContextEnvelope(envelope),
     delivery: {
       envelopeDigest: envelope.digest,
       adapter: { id: "pi", version: PiHarness.adapterVersion },
       injectionPoints: ["system-prompt", "custom-tools", "before-provider-request"],
-      registeredTools: tools.map((tool) => tool.name),
+      registeredTools: [...tools.map((tool) => tool.name), ...additionalToolNames],
       providerPayloadDigest: digest(JSON.stringify(providerPayload)),
       additionalContext: [{ kind: "pi-conversation-history", reviewable: true }],
     },
@@ -166,3 +175,13 @@ export function describePiBridge(envelope: ContextEnvelope, tools: readonly Harn
 }
 
 function digest(value: string): string { return createHash("sha256").update(value).digest("hex"); }
+function safeToolInput(name: string, value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  const input = value as Record<string, unknown>;
+  if (!name.startsWith("workspace_")) return { digest: digest(JSON.stringify(value)) };
+  return Object.fromEntries(Object.entries(input).map(([key, item]) => [key, ["content", "oldText", "newText"].includes(key) ? { digest: digest(String(item)), size: String(item).length } : item]));
+}
+function safeToolResult(value: unknown): unknown {
+  const result = value as { details?: { digest?: string; size?: number; [key: string]: unknown }; content?: unknown } | undefined;
+  return result?.details?.digest ? result.details : { digest: digest(JSON.stringify(value ?? null)) };
+}

@@ -2,6 +2,8 @@ node_modules/
 dist/
 .airic/
 .env
+models.json
+models-store.json
 coverage/
 playwright-report/
 test-results/

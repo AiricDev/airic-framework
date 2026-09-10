@@ -12,17 +12,20 @@
   },
   "dependencies": {
     "@airic/framework": "0.1.0",
+    "@airic/client": "0.1.0",
     "@airic/harness-pi": "0.1.0",
     "@airic/server": "0.1.0",
     "@airic/storage-files": "0.1.0",
     "@airic/ui": "0.1.0",
     "react": "19.1.1",
-    "react-dom": "19.1.1"
+    "react-dom": "19.1.1",
+    "react-router": "7.18.3"
   },
   "devDependencies": {
     "@airic/testing": "0.1.0",
     "@types/react": "19.1.10",
     "@types/react-dom": "19.1.7",
+    "@playwright/test": "1.55.0",
     "@vitejs/plugin-react": "5.0.2",
     "typescript": "5.9.2",
     "vite": "7.1.4",

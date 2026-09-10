@@ -31,7 +31,7 @@ export class FakeHarness implements AgentHarness {
         const tool = input.tools.find((candidate) => candidate.name === step.call!.tool);
         if (!tool) throw new Error(`FakeHarness cannot find tool ${step.call.tool}`);
         result = await tool.invoke(step.call.input, step.call.requestId);
-        await input.onEvent({ type: "tool", payload: { tool: step.call.tool, requestId: step.call.requestId, result } });
+        await input.onEvent({ type: "tool", payload: { phase: "end", name: step.call.tool, requestId: step.call.requestId, isError: false, result } });
         const refreshed = await input.refreshContext();
         this.envelopes.push(refreshed);
         const refreshedDelivery: DeliveryRecord = { ...delivery, envelopeDigest: refreshed.digest };

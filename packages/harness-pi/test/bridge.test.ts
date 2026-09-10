@@ -5,7 +5,7 @@ import type { ContextEnvelope, HarnessTool } from "@airic/framework";
 describe("Pi bridge delivery probe", () => {
   it("exposes the rendered envelope, actual tools, hooks and pre-send payload digest", () => {
     const envelope = {
-      envelopeId: "e", workId: "w", sequence: 1, assemblerVersion: "airic-context-v1", workDefinition: { id: "assist", revision: "r1" }, domainBindings: [],
+      envelopeId: "e", workId: "w", sequence: 1, assemblerVersion: "airic-context-v1", workDefinition: { id: "assist", digest: "d1", gitHead: "abc", dirty: false }, domainBindings: [],
       instructions: [{ id: "process", title: "Process", content: "Follow reviewed method", digest: "d", authority: "operating-model" }], observations: [], capabilityCatalog: [], availableCapabilities: [], discoverableContent: [], provenance: [], digest: "envelope-digest",
     } satisfies ContextEnvelope;
     const tools: HarnessTool[] = [{ name: "domain_case_get", description: "Get", inputSchema: { type: "object" }, invoke: async () => ({}) }];

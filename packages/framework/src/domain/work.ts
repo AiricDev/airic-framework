@@ -5,6 +5,10 @@ export interface VersionedRef {
   revision: string;
 }
 
+export interface DefinitionRef {
+  id: string;
+}
+
 export interface DomainBindingRef {
   id: string;
   release: string;
@@ -17,7 +21,7 @@ export interface Work {
   objective: string;
   input: unknown;
   status: WorkStatus;
-  definition: VersionedRef;
+  definition: DefinitionRef;
   domainBindings: readonly DomainBindingRef[];
   selectedContent: readonly string[];
   result?: unknown;

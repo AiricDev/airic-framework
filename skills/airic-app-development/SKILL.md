@@ -17,4 +17,4 @@ Choose the task and read only its reference:
 - Idempotency, `unknown`, recovery, journal, backup or version upgrade: [reliability.md](references/reliability.md)
 - Tests, architecture checks, packing and acceptance: [verification.md](references/verification.md)
 
-Implement the smallest end-to-end behavior through public package exports. Run the relevant focused test, then the repository architecture check and packed-application acceptance. In the handoff, state the domain release, Work Definition revision behavior, affected capability IDs, and evidence that a committed receipt—not Agent text—causes completion.
+Implement the smallest end-to-end behavior through public package exports. Run the relevant focused test, then the repository architecture check and packed-application acceptance. In the handoff, state the domain release, current Work Definition digest/Git state, affected capability IDs, and evidence that a committed receipt—not Agent text—causes completion.

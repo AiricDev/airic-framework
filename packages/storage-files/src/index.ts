@@ -1,6 +1,8 @@
+import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { cp, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, normalize, relative, resolve, sep } from "node:path";
+import { promisify } from "node:util";
 import { loadWorkDefinition, type DefinitionSource, type RuntimeEvent, type RuntimeStore } from "@airic/framework";
 
 interface CommitBody {
@@ -183,96 +185,58 @@ export class FileRuntimeStore implements RuntimeStore {
 
 export class DirectoryDefinitionSource implements DefinitionSource {
   readonly #root: string;
-  constructor(root: string) { this.#root = resolve(root); }
-  async readManifest(definitionId: string): Promise<string> { return readFile(this.#path(definitionId, "work.yml"), "utf8"); }
-  async readDocument(definitionId: string, path: string): Promise<string> { return readFile(this.#path(definitionId, path), "utf8"); }
-  async listDefinitionFiles(definitionId: string): Promise<readonly string[]> { return walkFiles(this.#path(definitionId, ".")); }
-  #path(definitionId: string, path: string): string {
+  readonly #gitRoot: string;
+  constructor(root: string, options: { gitRoot?: string } = {}) { this.#root = resolve(root); this.#gitRoot = resolve(options.gitRoot ?? resolve(root, "..")); }
+  async readManifest(definitionId: string): Promise<string> { return readFile(await this.#path(definitionId, "work.yml"), "utf8"); }
+  async readDocument(definitionId: string, path: string): Promise<string> { return readFile(await this.#path(definitionId, path), "utf8"); }
+  async listDefinitionFiles(definitionId: string): Promise<readonly string[]> { return walkFiles(await this.#path(definitionId, "."), true); }
+  async list(): Promise<readonly { id: string; title: string; digest: string }[]> {
+    const result = [];
+    for (const id of await safeReadDir(this.#root)) {
+      try { const definition = await loadWorkDefinition(this, id); result.push({ id, title: definition.manifest.title, digest: definition.digest }); } catch {}
+    }
+    return result;
+  }
+  async exportFiles(id: string): Promise<{ digest: string; files: Record<string, string> }> {
+    const definition = await loadWorkDefinition(this, id); const files: Record<string, string> = {};
+    for (const path of await this.listDefinitionFiles(id)) files[path] = await this.readDocument(id, path);
+    return { digest: definition.digest, files };
+  }
+  async status(): Promise<{ gitHead?: string; dirty: boolean }> {
+    const run = promisify(execFile);
+    try {
+      const [{ stdout: head }, { stdout: changes }] = await Promise.all([
+        run("git", ["rev-parse", "HEAD"], { cwd: this.#gitRoot }),
+        run("git", ["status", "--porcelain", "--untracked-files=normal"], { cwd: this.#gitRoot }),
+      ]);
+      return { gitHead: head.trim(), dirty: Boolean(changes.trim()) };
+    } catch { return { dirty: true }; }
+  }
+  async #path(definitionId: string, path: string): Promise<string> {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(definitionId)) throw new Error("Unsafe definition id");
     const base = resolve(this.#root, definitionId);
     const resolved = resolve(base, normalize(path));
     if (resolved !== base && !resolved.startsWith(`${base}${sep}`)) throw new Error("Work Definition path escapes its directory");
+    await rejectSymbolicPath(base, resolved);
     return resolved;
   }
 }
 
-export class VersionedDefinitionStore implements DefinitionSource {
-  readonly #root: string;
-  constructor(root: string) { this.#root = resolve(root); }
-
-  async initializeFrom(seedRoot: string, definitionIds: readonly string[]): Promise<void> {
-    await mkdir(this.#root, { recursive: true });
-    const seed = new DirectoryDefinitionSource(seedRoot);
-    for (const id of definitionIds) {
-      try { await this.#current(id); continue; } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-      const files: Record<string, string> = {};
-      for (const path of await seed.listDefinitionFiles(id)) files[path] = await seed.readDocument(id, path);
-      await this.publish({ id, files });
-    }
-  }
-
-  async publish(input: { id: string; files: Readonly<Record<string, string>>; baseRevision?: string }): Promise<{ revision: string }> {
-    this.#validateId(input.id);
-    let current: string | undefined;
-    try { current = await this.#current(input.id); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-    if (input.baseRevision !== undefined && current !== input.baseRevision) throw new Error(`Definition revision conflict: expected ${input.baseRevision}, found ${current ?? "none"}`);
-    const source: DefinitionSource = {
-      readManifest: async () => input.files["work.yml"] ?? missing("work.yml"),
-      readDocument: async (_id, path) => input.files[path] ?? missing(path),
-      listDefinitionFiles: async () => Object.keys(input.files),
-    };
-    const definition = await loadWorkDefinition(source, input.id);
-    const revisionDirectory = this.#revisionDirectory(input.id, definition.revision);
-    try { await stat(revisionDirectory); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      for (const [path, content] of Object.entries(input.files)) {
-        const target = safeChild(revisionDirectory, path); await mkdir(dirname(target), { recursive: true }); await writeAtomic(target, content);
-      }
-      await syncDirectory(revisionDirectory);
-    }
-    const definitionDirectory = resolve(this.#root, input.id); await mkdir(definitionDirectory, { recursive: true });
-    await writeAtomic(resolve(definitionDirectory, "current"), `${definition.revision}\n`);
-    return { revision: definition.revision };
-  }
-
-  async list(): Promise<readonly { id: string; title: string; revision: string }[]> {
-    const result = [];
-    for (const id of await safeReadDir(this.#root)) {
-      try { const revision = await this.#current(id); const manifest = YAML_PARSE(await this.readManifest(id, revision)) as { title?: string }; result.push({ id, title: manifest.title ?? id, revision }); } catch {}
-    }
-    return result;
-  }
-
-  async exportFiles(id: string, revision?: string): Promise<{ revision: string; files: Record<string, string> }> {
-    const selected = revision ?? await this.#current(id); const files: Record<string, string> = {};
-    for (const path of await this.listDefinitionFiles(id, selected)) files[path] = await this.readDocument(id, path, selected);
-    return { revision: selected, files };
-  }
-
-  async readManifest(id: string, revision?: string): Promise<string> { return this.readDocument(id, "work.yml", revision); }
-  async readDocument(id: string, path: string, revision?: string): Promise<string> { const selected = revision ?? await this.#current(id); return readFile(safeChild(this.#revisionDirectory(id, selected), path), "utf8"); }
-  async listDefinitionFiles(id: string, revision?: string): Promise<readonly string[]> { const selected = revision ?? await this.#current(id); return walkFiles(this.#revisionDirectory(id, selected)); }
-  async #current(id: string): Promise<string> { this.#validateId(id); return (await readFile(resolve(this.#root, id, "current"), "utf8")).trim(); }
-  #revisionDirectory(id: string, revision: string): string { this.#validateId(id); if (!/^[a-f0-9]{64}$/.test(revision)) throw new Error("Invalid definition revision"); return resolve(this.#root, id, "revisions", revision); }
-  #validateId(id: string): void { if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(id)) throw new Error("Unsafe definition id"); }
-}
-
-async function walkFiles(root: string): Promise<string[]> {
+async function walkFiles(root: string, rejectLinks = false): Promise<string[]> {
   const result: string[] = [];
   for (const entry of await readdir(root, { withFileTypes: true })) {
     const path = join(root, entry.name);
-    if (entry.isDirectory()) result.push(...(await walkFiles(path)).map((child) => join(entry.name, child)));
+    if (rejectLinks && entry.isSymbolicLink()) throw new Error(`Symbolic links are not allowed in Work Definitions: ${path}`);
+    if (entry.isDirectory()) result.push(...(await walkFiles(path, rejectLinks)).map((child) => join(entry.name, child)));
     else result.push(relative(root, path));
   }
   return result.sort();
 }
+async function rejectSymbolicPath(root: string, target: string): Promise<void> { let current = root; for (const segment of relative(root, target).split(sep).filter(Boolean)) { current = resolve(current, segment); try { if ((await lstat(current)).isSymbolicLink()) throw new Error(`Symbolic links are not allowed in Work Definitions: ${current}`); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; } } }
 async function safeReadDir(path: string): Promise<string[]> { try { return await readdir(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; } }
 async function syncDirectory(path: string): Promise<void> { const handle = await open(path, "r"); try { await handle.sync(); } finally { await handle.close(); } }
 async function writeAtomic(path: string, content: string): Promise<void> { const temporary = `${path}.${randomUUID()}.tmp`; const handle = await open(temporary, "wx", 0o600); try { await handle.writeFile(content); await handle.sync(); } finally { await handle.close(); } await rename(temporary, path); await syncDirectory(dirname(path)); }
-function safeChild(root: string, path: string): string { const child = resolve(root, normalize(path)); if (child !== root && !child.startsWith(`${root}${sep}`)) throw new Error("Path escapes definition revision"); return child; }
-function missing(path: string): never { throw new Error(`Missing definition file ${path}`); }
-function YAML_PARSE(value: unknown): unknown { if (typeof value !== "string") return value; const match = value.match(/^title:\s*(.+)$/m); return { title: match?.[1]?.trim() }; }
+function safeChild(root: string, path: string): string { const child = resolve(root, normalize(path)); if (child !== root && !child.startsWith(`${root}${sep}`)) throw new Error("Path escapes the allowed directory"); return child; }
 function digest(value: string | Uint8Array): string { return createHash("sha256").update(value).digest("hex"); }
 function stable(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map((child) => stable(child === undefined ? null : child)).join(",")}]`;

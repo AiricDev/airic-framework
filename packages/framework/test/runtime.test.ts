@@ -36,16 +36,17 @@ function fixture(commandMode: "committed" | "rejected" | "unknown" = "committed"
     readSource: async (locator) => ({ locator, content: "export function updateCase() {}" }),
   };
   const harness = new FakeHarness();
+  const definitions = new MemoryDefinitionSource({ assist: { manifest, documents: { "process.md": "Follow the objective.", "precedent.md": "Either order is valid." } }, reflection: { manifest: reflectionManifest, documents: { "reflection.md": "Inspect trace evidence." } } });
   const runtime = new AiricRuntime({
     store: new MemoryRuntimeStore(), harness,
-    definitions: new MemoryDefinitionSource({ assist: { manifest, documents: { "process.md": "Follow the objective.", "precedent.md": "Either order is valid." } }, reflection: { manifest: reflectionManifest, documents: { "reflection.md": "Inspect trace evidence." } } }),
+    definitions,
   });
   runtime.registerDomain(domain);
-  return { runtime, harness, domain, commandInvocations: () => commandInvocations };
+  return { runtime, harness, definitions, domain, commandInvocations: () => commandInvocations };
 }
 
 describe("AiricRuntime", () => {
-  it("delivers pinned context and commits through an Action before completing Work", async () => {
+  it("delivers current operating-model context and commits through an Action before completing Work", async () => {
     const { runtime, harness } = fixture(); await runtime.open();
     const work = await runtime.createWork({ definitionId: "assist", objective: "Update the case", domainIds: ["cases"] });
     harness.enqueue(
@@ -73,6 +74,22 @@ describe("AiricRuntime", () => {
     expect(runtime.getTrace(work.id).some((event) => event.type === "context.retrieved")).toBe(true);
   });
 
+  it("reloads a changed operating model for the next turn and preserves delivered content as evidence", async () => {
+    const { runtime, harness, definitions } = fixture(); await runtime.open();
+    const work = await runtime.createWork({ definitionId: "assist", objective: "Follow live guidance", domainIds: ["cases"] });
+    harness.enqueue({ text: "First" });
+    await runtime.sendMessage(work.id, "Begin", { id: "user", scopes: [] });
+    definitions.definitions.assist!.documents["process.md"] = "Follow the revised objective.";
+    harness.enqueue({ text: "Second" });
+    await runtime.sendMessage(work.id, "Continue", { id: "user", scopes: [] });
+    expect(harness.envelopes.at(-1)?.instructions[0]?.content).toBe("Follow the revised objective.");
+    const trace = runtime.getTrace(work.id);
+    expect(trace.some((event) => event.type === "context.operating-model-changed")).toBe(true);
+    const assembled = trace.filter((event) => event.type === "context.assembled");
+    expect((assembled[0]?.payload as { evidence?: unknown[] }).evidence).toHaveLength(1);
+    expect((assembled[1]?.payload as { evidence?: unknown[] }).evidence).toHaveLength(1);
+  });
+
   it("refuses a harness result that never confirms actual context delivery", async () => {
     const { runtime } = fixture(); await runtime.open();
     runtime.options.harness = { capabilities: () => ({ resume: false, interrupt: false, contextHook: false, compactionTrace: false }), run: async () => ({ text: "Unverified" }) };
@@ -84,7 +101,8 @@ describe("AiricRuntime", () => {
   it("stores reflection candidates as content-addressed evidence, not entities", async () => {
     const { runtime } = fixture(); await runtime.open();
     const work = await runtime.createWork({ definitionId: "reflection", objective: "Reflect", domainIds: [] });
-    const object = await runtime.recordReflectionCandidate(work.id, { targetKind: "operating-model", targetPath: "process.md", baseRevision: work.definition.revision, diff: "+Clarify alternate order", rationale: "Trace showed hesitation", evidenceEventIds: [] });
+    const definition = await runtime.loadDefinition("reflection");
+    const object = await runtime.recordReflectionCandidate(work.id, { targetKind: "operating-model", targetPath: "process.md", baseContentDigest: definition.digest, diff: "+Clarify alternate order", rationale: "Trace showed hesitation", evidenceEventIds: [] });
     expect(object.digest).toHaveLength(64);
     expect(runtime.getTrace(work.id).at(-1)?.type).toBe("reflection.candidate");
   });
@@ -96,6 +114,20 @@ describe("AiricRuntime", () => {
     await expect(runtime.sendMessage(work.id, "Submit", { id: "user", scopes: [] })).rejects.toThrow("More evidence is required");
     await expect(runtime.completeWork(work.id, {})).rejects.toThrow("case.update");
     expect(runtime.getTrace(work.id).some((event) => event.type === "action.rejected")).toBe(true);
+  });
+
+  it("requires successful harness tool evidence declared by the current operating model", async () => {
+    const { runtime, harness, definitions } = fixture();
+    (definitions.definitions.assist!.manifest as { completion: { requiredCapabilities: string[]; requiredTools?: string[] } }).completion = { requiredCapabilities: [], requiredTools: ["workspace_changes"] };
+    await runtime.open();
+    const work = await runtime.createWork({ definitionId: "assist", objective: "Produce governed files", domainIds: ["cases"] });
+    await expect(runtime.completeWork(work.id, {})).rejects.toThrow("workspace_changes");
+    harness.enqueue(
+      { event: { type: "tool", payload: { phase: "end", name: "workspace_changes", isError: false } } },
+      { call: { tool: "airic_complete_work", input: { result: { type: "workspace-change" } }, requestId: "complete-tools" } },
+    );
+    await runtime.sendMessage(work.id, "Finish", { id: "user", scopes: [] });
+    expect(runtime.getWork(work.id)?.status).toBe("completed");
   });
 
   it("reconciles an unknown response by stable command identity without redispatch", async () => {
@@ -112,9 +144,9 @@ describe("AiricRuntime", () => {
   it("makes a domain candidate effective only when a later Work binds the new release", async () => {
     const { runtime, domain } = fixture(); await runtime.open();
     const source = await runtime.createWork({ definitionId: "reflection", objective: "Find a domain improvement", domainIds: [] });
-    const candidate = await runtime.recordReflectionCandidate(source.id, { targetKind: "domain", targetPath: "src/domain/case.ts", baseRevision: domain.sourceBundle.revision, diff: "+Document the invariant reason", rationale: "Improve Agent understanding without changing enforcement", evidenceEventIds: [] });
+    const candidate = await runtime.recordReflectionCandidate(source.id, { targetKind: "domain", targetPath: "src/domain/case.ts", baseContentDigest: domain.sourceBundle.digest, diff: "+Document the invariant reason", rationale: "Improve Agent understanding without changing enforcement", evidenceEventIds: [] });
     runtime.registerDomain({ ...domain, release: "1.1.0", buildId: "build-2", sourceBundle: { ...domain.sourceBundle, revision: "2", digest: "source-digest-2" } });
-    await runtime.recordReflectionOutcome(source.id, { candidateDigest: candidate.digest, decision: "adopted", reviewer: "architect", publishedRef: { kind: "domain-release", id: "cases", revision: "1.1.0" }, validation: { tests: "passed" } });
+    await runtime.recordReflectionOutcome(source.id, { candidateDigest: candidate.digest, decision: "adopted", reviewer: "architect", appliedRef: { kind: "domain-release", id: "cases", version: "1.1.0" }, validation: { tests: "passed" } });
     expect(runtime.getWork(source.id)?.domainBindings).toEqual([]);
     const later = await runtime.createWork({ definitionId: "assist", objective: "Use the adopted domain release", domainIds: ["cases"] });
     expect(later.domainBindings[0]?.release).toBe("1.1.0");

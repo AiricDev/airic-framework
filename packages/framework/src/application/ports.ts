@@ -51,7 +51,7 @@ export interface DeliveryRecord {
 }
 
 export interface AgentHarness {
-  capabilities(): { resume: boolean; interrupt: boolean; contextHook: boolean; compactionTrace: boolean };
+  capabilities(): { resume: boolean; interrupt: boolean; contextHook: boolean; compactionTrace: boolean; workspaceDefinitions?: readonly string[] };
   run(input: {
     workId: string;
     message: string;
@@ -66,7 +66,8 @@ export interface AgentHarness {
 }
 
 export interface DefinitionSource {
-  readManifest(definitionId: string, revision?: string): Promise<unknown>;
-  readDocument(definitionId: string, path: string, revision?: string): Promise<string>;
-  listDefinitionFiles(definitionId: string, revision?: string): Promise<readonly string[]>;
+  readManifest(definitionId: string): Promise<unknown>;
+  readDocument(definitionId: string, path: string): Promise<string>;
+  listDefinitionFiles(definitionId: string): Promise<readonly string[]>;
+  status?(): Promise<{ gitHead?: string; dirty: boolean }>;
 }

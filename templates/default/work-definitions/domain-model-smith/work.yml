@@ -1,0 +1,25 @@
+schemaVersion: 1
+id: domain-model-smith
+title: Domain Model Smith
+description: Collaboratively create a focused executable domain model and its domain tests.
+compatibleDomains: []
+documents:
+  - id: process
+    path: process.md
+    title: Domain modeling process
+    role: process
+    load: required
+    requires: [boundaries]
+  - id: boundaries
+    path: boundaries.md
+    title: Scope and authority boundaries
+    role: policy
+    load: required
+  - id: modeling-guide
+    path: modeling-guide.md
+    title: Modeling distinctions
+    role: reference
+    load: on-demand
+completion:
+  requiredCapabilities: []
+  requiredTools: [workspace_check_domain_tests, workspace_changes]

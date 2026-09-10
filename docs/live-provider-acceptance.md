@@ -5,7 +5,7 @@ This record contains sanitized evidence from the credentialed `deepseek/deepseek
 ## Governed business path
 
 - Work: `49404e05-76a8-499c-8572-4bdbcfa21bf3`
-- Pinned Work Definition revision: `aad7c2824695daff35f63e02443f2a2e444da055d168d63d3c07e31db3ac805d`
+- Delivered Work Definition digest: `aad7c2824695daff35f63e02443f2a2e444da055d168d63d3c07e31db3ac805d` (historical pre-Git acceptance)
 - Pinned Domain release/build: `case-management@1.0.0`, `case-management-demo-v1`
 - First turn: the model read authoritative case state and attempted readiness without customer details.
 - The runtime persisted Action `7eb54325c3d66f5ba4fc9eff2c187fbb` before dispatch; the domain rejected it with `RequiredInformationMissing`.
