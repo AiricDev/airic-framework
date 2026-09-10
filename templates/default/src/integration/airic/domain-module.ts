@@ -2,12 +2,10 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import type { CommandReceipt, DomainModule } from "@airic/framework";
-import { CaseService } from "../application/case-service.js";
-import { CasePolicyError } from "../domain/case.js";
-import type { JsonCaseRepository } from "./json-case-repository.js";
+import type { CaseService } from "../../application/case-service.js";
+import { CasePolicyError } from "../../domain/case.js";
 
-export function createCaseDomain(repository: JsonCaseRepository, sourceRoot: string): DomainModule {
-  const service = new CaseService(repository);
+export function createCaseDomain(service: CaseService, sourceRoot: string): DomainModule {
   const release = "1.0.0";
   return {
     id: "case-management",
@@ -35,7 +33,6 @@ export function createCaseDomain(repository: JsonCaseRepository, sourceRoot: str
               properties: {
                 customerName: { type: "string" },
                 email: { type: "string" },
-                markReady: { type: "boolean" },
               },
             },
           },
@@ -54,7 +51,7 @@ export function createCaseDomain(repository: JsonCaseRepository, sourceRoot: str
       },
     ],
     inspectCommand: async (_context, commandId) => {
-      const receipt = await repository.inspect(commandId);
+      const receipt = await service.inspect(commandId);
       return receipt ? { commandId, status: "committed", revision: String(receipt.record.revision), result: receipt.record, observedAt: new Date().toISOString() } : undefined;
     },
     readSource: async (locator) => {

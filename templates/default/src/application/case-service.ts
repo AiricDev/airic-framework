@@ -2,6 +2,7 @@ import { CasePolicyError, updateCase, type CaseRecord } from "../domain/case.js"
 
 export interface CaseRepository {
   get(id: string): Promise<CaseRecord | undefined>;
+  list(): Promise<CaseRecord[]>;
   commit(commandId: string, current: CaseRecord, next: CaseRecord): Promise<{ commandId: string; record: CaseRecord }>;
   inspect(commandId: string): Promise<{ commandId: string; record: CaseRecord } | undefined>;
 }
@@ -11,6 +12,14 @@ export class CaseService {
 
   async get(id: string) {
     return this.repository.get(id);
+  }
+
+  async list() {
+    return this.repository.list();
+  }
+
+  async inspect(commandId: string) {
+    return this.repository.inspect(commandId);
   }
 
   async update(command: {

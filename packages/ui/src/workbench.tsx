@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createAiricClient, type AiricClient, type DefinitionFilesDto, type DefinitionSummaryDto, type TraceDto, type WorkDto, type WorkspaceStatusDto } from "@airic/client";
 import { useOptionalAiricClient } from "./provider.js";
 import "./style.css";
@@ -24,6 +24,8 @@ export function AiricWorkbench({ client: suppliedClient, apiBase = "/api", resul
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
   const active = works.find((work) => work.id === activeId);
 
   const reload = async () => {
@@ -32,13 +34,13 @@ export function AiricWorkbench({ client: suppliedClient, apiBase = "/api", resul
   };
   const reloadDefinitions = async () => setDefinitions(await client.listDefinitions());
   const reloadWorkspace = async () => { try { setWorkspace(await client.getWorkspace()); } catch {} };
-  const reloadActive = async () => {
-    if (!activeId) return;
-    const value = await client.getWork(activeId);
+  const reloadActive = async (id = activeIdRef.current) => {
+    if (!id) return;
+    const value = await client.getWork(id);
     setTrace(value.trace); setWorks((items) => [value.work, ...items.filter((item) => item.id !== value.work.id)]);
   };
-  useEffect(() => { void reload(); void reloadDefinitions(); void reloadWorkspace(); void client.getCapabilities().then((value) => setWorkspaceDefinitions(value.workspaceDefinitions ?? [])); return client.subscribeTrace(() => { void reload(); void reloadActive(); void reloadWorkspace(); }); }, [client]);
-  useEffect(() => { void reloadActive(); }, [activeId]);
+  useEffect(() => { void reload(); void reloadDefinitions(); void reloadWorkspace(); void client.getCapabilities().then((value) => setWorkspaceDefinitions(value.workspaceDefinitions ?? [])); return client.subscribeTrace((event) => { void reload(); if (event.workId === activeIdRef.current) void reloadActive(event.workId); void reloadWorkspace(); }); }, [client]);
+  useEffect(() => { void reloadActive(activeId); }, [activeId]);
 
   const messages = trace.filter((event) => event.type === "message.user" || event.type === "message.agent");
   const candidates = trace.filter((event) => event.type === "reflection.candidate");

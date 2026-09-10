@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CasePolicyError, updateCase } from "../src/domain/case.js";
+import { CasePolicyError, updateCase } from "../../src/domain/case.js";
 
 describe("case domain", () => {
   it("requires both customer name and valid email before readiness", () => {

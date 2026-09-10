@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 
 const run = promisify(execFile);
 const root = resolve(import.meta.dirname, "..");
-await run("npm", ["run", "build"], { cwd: root });
+await run("pnpm", ["run", "build"], { cwd: root });
 await run("node", [resolve(root, "scripts/pack-all.mjs")], { cwd: root });
 const artifacts = JSON.parse(await readFile(resolve(root, "artifacts/packs/manifest.json"), "utf8"));
 const scratch = await mkdtemp(resolve(tmpdir(), "airic-packed-app-"));
@@ -15,7 +15,8 @@ const app = resolve(scratch, "generated-app");
 const missingGitApp = resolve(scratch, "missing-git-app");
 await mkdir(launcher);
 await writeFile(resolve(launcher, "package.json"), "{\"private\":true}\n");
-await run("npm", ["install", "--package-lock=false", artifacts["create-airic"]], { cwd: launcher });
+// `pnpm add <tarball>` has no `--no-save`; it writes the installed package spec into the package.json. The launcher is throwaway, so this is fine.
+await run("pnpm", ["add", artifacts["create-airic"]], { cwd: launcher });
 try {
   await run(process.execPath, [resolve(launcher, "node_modules/create-airic/dist/index.js"), missingGitApp], { cwd: scratch, env: { ...process.env, PATH: "/airic-git-is-not-installed" } });
   throw new Error("create-airic unexpectedly succeeded without Git");
@@ -37,13 +38,33 @@ if ((await run("git", ["status", "--porcelain"], { cwd: app })).stdout.trim()) t
 for (const path of [".env", "models.json", "models-store.json", ".airic/runtime"]) await run("git", ["check-ignore", "-q", path], { cwd: app });
 await access(resolve(app, "work-definitions/domain-model-smith/work.yml"));
 await access(resolve(app, "work-definitions/operating-model-smith/work.yml"));
-const localPackages = ["framework", "storage-files", "harness-pi", "server", "ui"].map((name) => artifacts[name]);
-await run("npm", ["install", "--package-lock=false", ...localPackages], { cwd: app });
-await run("npm", ["run", "build"], { cwd: app });
-await run("npm", ["test"], { cwd: app });
+await access(resolve(app, "work-definitions/experience-smith/work.yml"));
+await access(resolve(app, "e2e/cases.spec.ts"));
+const localPackages = {
+  framework: "@airic/framework",
+  "storage-files": "@airic/storage-files",
+  "harness-pi": "@airic/harness-pi",
+  server: "@airic/server",
+  ui: "@airic/ui",
+  client: "@airic/client",
+};
+// The generated app declares `@airic/*` as bare `"0.1.0"` specs, which are not published to any registry. Rewrite them to absolute `file:` tarball paths and pin each package via `pnpm.overrides` so the packages' own bare `0.1.0` inter-dependencies (e.g. `@airic/harness-pi` -> `@airic/framework`) also resolve to the local tarballs instead of a registry. The clean-tree assertion above has already run, so mutating this throwaway scratch app's package.json is fine.
+const appPackageJsonPath = resolve(app, "package.json");
+const appPackageJson = JSON.parse(await readFile(appPackageJsonPath, "utf8"));
+const overrides = {};
+for (const [name, packageName] of Object.entries(localPackages)) {
+  const spec = `file:${artifacts[name]}`;
+  appPackageJson.dependencies[packageName] = spec;
+  overrides[packageName] = spec;
+}
+appPackageJson.pnpm = { overrides };
+await writeFile(appPackageJsonPath, `${JSON.stringify(appPackageJson, null, 2)}\n`);
+await run("pnpm", ["install"], { cwd: app });
+await run("pnpm", ["run", "build"], { cwd: app });
+await run("pnpm", ["test"], { cwd: app });
 
 const port = 43871;
-const child = spawn("npm", ["run", "dev"], { cwd: app, env: { ...process.env, PORT: String(port) }, stdio: ["ignore", "pipe", "pipe"] });
+const child = spawn("pnpm", ["run", "dev"], { cwd: app, env: { ...process.env, PORT: String(port) }, stdio: ["ignore", "pipe", "pipe"] });
 let output = "";
 child.stdout.on("data", (chunk) => { output += chunk; });
 child.stderr.on("data", (chunk) => { output += chunk; });
@@ -51,7 +72,11 @@ try {
   let healthy = false;
   for (let attempt = 0; attempt < 50; attempt += 1) {
     if (child.exitCode !== null) throw new Error(`Generated app exited early:\n${output}`);
-    try { const response = await fetch(`http://127.0.0.1:${port}/api/health`); healthy = response.ok; } catch {}
+    try {
+      const applicationHealth = await fetch(`http://127.0.0.1:${port}/api/app/health`);
+      const airicHealth = await fetch(`http://127.0.0.1:${port}/api/airic/health`);
+      healthy = applicationHealth.ok && airicHealth.ok;
+    } catch {}
     if (healthy) break;
     await new Promise((resolveWait) => setTimeout(resolveWait, 100));
   }

@@ -8,7 +8,7 @@ const run = promisify(execFile);
 
 const requested = process.argv[2];
 if (!requested || requested === "--help" || requested === "-h") {
-  console.log("Usage: npm create airic@0.1.0 <directory>");
+  console.log("Usage: pnpm create airic@0.1.0 <directory>");
   process.exit(requested ? 0 : 1);
 }
 
@@ -32,6 +32,7 @@ const packageJson = {
     build: "tsc -p tsconfig.json && vite build",
     dev: "node --env-file-if-exists=.env --enable-source-maps dist/main.js",
     test: "vitest run",
+    "test:browser": "playwright test",
     typecheck: "tsc -p tsconfig.json --noEmit",
   },
   dependencies: {
@@ -51,6 +52,7 @@ const packageJson = {
     "@types/react-dom": "19.1.7",
     "@playwright/test": "1.55.0",
     "@vitejs/plugin-react": "5.0.2",
+    "jsdom": "27.0.0",
     "typescript": "5.9.2",
     "vite": "7.1.4",
     "vitest": "3.2.4"
@@ -86,4 +88,4 @@ const gitEnvironment = {
 await run("git", ["commit", "-m", "Initialize Airic application"], { cwd: target, env: gitEnvironment });
 console.log(`Created ${name} in ${target}`);
 console.log("Initialized Git on main with the Airic scaffold commit.");
-console.log("Next: npm install && npm run build && npm run dev");
+console.log("Next: pnpm install && pnpm run build && pnpm run dev");

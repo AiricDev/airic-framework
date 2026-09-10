@@ -26,6 +26,21 @@ export interface AiricHttpHandler {
   close(): Promise<void>;
 }
 
+export interface StaticHandlerOptions { directory: string; spaFallback?: (pathname: string) => boolean }
+export interface StaticHttpHandler { handle(request: IncomingMessage, response: ServerResponse): Promise<boolean> }
+
+export function createStaticHandler(options: StaticHandlerOptions): StaticHttpHandler {
+  const base = resolve(options.directory);
+  const spaFallback = options.spaFallback ?? ((pathname) => pathname !== "/api" && !pathname.startsWith("/api/"));
+  return {
+    async handle(request, response) {
+      if (request.method !== "GET") return false;
+      const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
+      return servePath(base, decodeURIComponent(url.pathname), response, spaFallback);
+    },
+  };
+}
+
 export function createAiricHttpHandler(options: AiricHttpHandlerOptions): AiricHttpHandler {
   const basePath = normalizeBasePath(options.basePath ?? "/api/airic");
   const clients = new Set<ServerResponse>();
@@ -41,7 +56,7 @@ export function createAiricHttpHandler(options: AiricHttpHandlerOptions): AiricH
         if (path === "/health") return json(response, 200, { ok: true });
         if (path === "/events" && request.method === "GET") {
           response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-          const lastId = request.headers["last-event-id"];
+          const lastId = lastEventId(request, url);
           const events = options.runtime.listWorks().flatMap((work) => [...options.runtime.getTrace(work.id)]).sort((a, b) => a.timestamp.localeCompare(b.timestamp));
           const start = typeof lastId === "string" ? Math.max(0, events.findIndex((event) => event.eventId === lastId) + 1) : events.length;
           for (const event of events.slice(start)) response.write(encodeSse(event));
@@ -76,10 +91,10 @@ export function createAiricHttpHandler(options: AiricHttpHandlerOptions): AiricH
 
 export function createAiricServer(options: AiricServerOptions) {
   const handler = createAiricHttpHandler({ ...options, basePath: options.basePath ?? "/api" });
+  const staticHandler = options.staticDirectory ? createStaticHandler({ directory: options.staticDirectory }) : undefined;
   const server = createServer(async (request, response) => {
     if (await handler.handle(request, response)) return;
-    const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
-    if (options.staticDirectory && request.method === "GET") return serveStatic(options.staticDirectory, url.pathname, response);
+    if (staticHandler && await staticHandler.handle(request, response)) return;
     json(response, 404, { error: "Not found", code: "RouteNotFound" });
   });
   return {
@@ -90,9 +105,17 @@ export function createAiricServer(options: AiricServerOptions) {
 }
 
 function normalizeBasePath(value: string): string { const path = `/${value}`.replace(/\/{2,}/gu, "/").replace(/\/$/u, ""); return path || "/"; }
+function lastEventId(request: IncomingMessage, url: URL): string | undefined { const header = request.headers["last-event-id"]; const fromHeader = Array.isArray(header) ? header[0] : header; return fromHeader ?? url.searchParams.get("lastEventId") ?? undefined; }
 async function authenticate(options: AiricHttpHandlerOptions, request: IncomingMessage) { return options.authenticate?.(request) ?? { id: "local-user", scopes: ["airic:local"] }; }
 async function bodyJson(request: IncomingMessage): Promise<unknown> { const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk)); return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {}; }
 function json(response: ServerResponse, status: number, value: unknown): true { response.writeHead(status, { "content-type": "application/json; charset=utf-8" }); response.end(JSON.stringify(value)); return true; }
 function encodeSse(event: TraceEvent): string { return `id: ${event.eventId}\nevent: trace\ndata: ${JSON.stringify(event)}\n\n`; }
-async function serveStatic(root: string, pathname: string, response: ServerResponse): Promise<void> { const base = resolve(root); const requested = pathname === "/" ? "index.html" : decodeURIComponent(pathname.slice(1)); const path = resolve(base, requested); if (path !== base && !path.startsWith(`${base}${sep}`)) return void json(response, 403, { error: "Forbidden", code: "Forbidden" }); let target = path; try { if ((await stat(target)).isDirectory()) target = resolve(target, "index.html"); } catch { if (!extname(requested)) target = resolve(base, "index.html"); } try { const info = await stat(target); response.writeHead(200, { "content-type": mime(target), "content-length": info.size }); createReadStream(target).pipe(response); } catch { json(response, 404, { error: "Not found", code: "RouteNotFound" }); } }
+async function servePath(base: string, pathname: string, response: ServerResponse, spaFallback: (pathname: string) => boolean): Promise<boolean> {
+  const requested = pathname === "/" ? "index.html" : pathname.slice(1);
+  const path = resolve(base, requested);
+  if (path !== base && !path.startsWith(`${base}${sep}`)) { json(response, 403, { error: "Forbidden", code: "Forbidden" }); return true; }
+  let target = path;
+  try { if ((await stat(target)).isDirectory()) target = resolve(target, "index.html"); } catch { if (!extname(requested) && spaFallback(pathname)) target = resolve(base, "index.html"); }
+  try { const info = await stat(target); response.writeHead(200, { "content-type": mime(target), "content-length": info.size }); createReadStream(target).pipe(response); return true; } catch { return false; }
+}
 function mime(path: string): string { return ({ ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml" } as Record<string, string>)[extname(path)] ?? "application/octet-stream"; }

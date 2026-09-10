@@ -12,9 +12,10 @@ const packages = ["framework", "client", "storage-files", "testing", "harness-pi
 const artifacts = {};
 for (const name of packages) {
   const directory = resolve(root, `packages/${name}`);
-  const { stdout } = await run("npm", ["pack", "--json", "--pack-destination", destination], { cwd: directory });
+  // `pnpm pack --json` emits a single object with an absolute `filename` (unlike npm's array of `{ filename }`).
+  const { stdout } = await run("pnpm", ["pack", "--json", "--pack-destination", destination], { cwd: directory });
   const result = JSON.parse(stdout);
-  artifacts[name] = resolve(destination, result[0].filename);
+  artifacts[name] = result.filename;
 }
 await writeFile(resolve(destination, "manifest.json"), `${JSON.stringify(artifacts, null, 2)}\n`);
 console.log(`Packed ${packages.length} public packages in ${destination}`);

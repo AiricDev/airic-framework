@@ -14,9 +14,10 @@ async function fixture() {
     root,
     grants: [{
       definitionId: "domain-model-smith",
+      read: ["src/domain", "test/domain"],
       write: ["src/domain", "test/domain"],
       denyWrite: ["src/domain/protected"],
-      checks: [{ id: "safe_env", title: "safe environment", command: process.execPath, args: ["-e", "process.stdout.write(String(process.env.AIRIC_API_KEY))"] }],
+      checks: [{ id: "safe_env", title: "safe environment", command: process.execPath, args: ["-e", "process.stdout.write(String(process.env.AIRIC_API_KEY))"], requiredChangeRoots: ["test/domain"] }],
     }],
   } as const;
   const tools = await createWorkspaceTools({ policy, definitionId: "domain-model-smith", stateDirectory: join(root, ".airic-state") });
@@ -35,7 +36,14 @@ describe("Pi workspace tools", () => {
 
   it("confines reads and writes, rejects secrets and detects concurrent changes", async () => {
     const { root, call } = await fixture();
+    await writeFile(join(root, ".npmrc"), "//registry.example/:_authToken=hidden\n");
     await expect(call("workspace_read", { path: ".env" })).rejects.toThrow("private");
+    await expect(call("workspace_read", { path: ".npmrc" })).rejects.toThrow("private");
+    await expect(call("workspace_read", { path: "work-definitions/operating-model-smith/work.yml" })).rejects.toThrow("not granted");
+    const listed = await call("workspace_list");
+    expect(listed.content[0]?.text).toContain("src/domain/case.ts");
+    expect(listed.content[0]?.text).not.toContain("work-definitions");
+    expect(listed.content[0]?.text).not.toContain(".npmrc");
     await expect(call("workspace_read", { path: "../outside" })).rejects.toThrow("escapes");
     await expect(call("workspace_write", { path: "src/application/service.ts", content: "x" })).rejects.toThrow("not granted");
     await call("workspace_edit", { path: "src/domain/case.ts", oldText: "value = 1", newText: "value = 2" });
@@ -49,6 +57,8 @@ describe("Pi workspace tools", () => {
     await symlink(tmpdir(), join(root, "src", "domain", "linked"));
     await expect(call("workspace_read", { path: "src/domain/linked/anything" })).rejects.toThrow("Symbolic links");
     process.env.AIRIC_API_KEY = "must-not-leak";
+    await expect(call("workspace_check_safe_env")).rejects.toThrow("requires a change under test/domain");
+    await call("workspace_write", { path: "test/domain/case.test.ts", content: "test\n" });
     const checked = await call("workspace_check_safe_env");
     delete process.env.AIRIC_API_KEY;
     expect(checked.content[0]?.text).toBe("undefined");
@@ -60,5 +70,11 @@ describe("Pi workspace tools", () => {
     const changed = await call("workspace_changes");
     expect(changed.content[0]?.text).toContain('"status": "added"');
     expect(changed.content[0]?.text).toContain("test/domain/case.test.ts");
+  });
+
+  it("does not treat an empty change set as completion evidence", async () => {
+    const { root, call } = await fixture();
+    await writeFile(join(root, "src", "domain", "external.ts"), "external\n");
+    await expect(call("workspace_changes")).rejects.toThrow("WorkspaceChangeRequired");
   });
 });

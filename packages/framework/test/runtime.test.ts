@@ -123,10 +123,33 @@ describe("AiricRuntime", () => {
     const work = await runtime.createWork({ definitionId: "assist", objective: "Produce governed files", domainIds: ["cases"] });
     await expect(runtime.completeWork(work.id, {})).rejects.toThrow("workspace_changes");
     harness.enqueue(
-      { event: { type: "tool", payload: { phase: "end", name: "workspace_changes", isError: false } } },
+      { event: { type: "tool", payload: { phase: "end", name: "workspace_changes", isError: false, result: { changes: [] } } } },
+      { call: { tool: "airic_complete_work", input: { result: { type: "workspace-change" } }, requestId: "complete-with-empty-evidence" } },
+    );
+    await expect(runtime.sendMessage(work.id, "Finish without changes", { id: "user", scopes: [] })).rejects.toThrow("workspace_changes");
+    harness.enqueue(
+      { event: { type: "tool", payload: { phase: "end", name: "workspace_changes", isError: false, result: { changes: [{ path: "src/domain/case.ts", status: "modified" }] } } } },
       { call: { tool: "airic_complete_work", input: { result: { type: "workspace-change" } }, requestId: "complete-tools" } },
     );
     await runtime.sendMessage(work.id, "Finish", { id: "user", scopes: [] });
+    expect(runtime.getWork(work.id)?.status).toBe("completed");
+  });
+
+  it("requires structured passed evidence from host checks", async () => {
+    const { runtime, harness, definitions } = fixture();
+    (definitions.definitions.assist!.manifest as { completion: { requiredCapabilities: string[]; requiredTools?: string[] } }).completion = { requiredCapabilities: [], requiredTools: ["workspace_check_domain_tests"] };
+    await runtime.open();
+    const work = await runtime.createWork({ definitionId: "assist", objective: "Validate governed files", domainIds: ["cases"] });
+    harness.enqueue(
+      { event: { type: "tool", payload: { phase: "end", name: "workspace_check_domain_tests", isError: false } } },
+      { call: { tool: "airic_complete_work", input: { result: {} }, requestId: "missing-check-evidence" } },
+    );
+    await expect(runtime.sendMessage(work.id, "Finish without evidence", { id: "user", scopes: [] })).rejects.toThrow("workspace_check_domain_tests");
+    harness.enqueue(
+      { event: { type: "tool", payload: { phase: "end", name: "workspace_check_domain_tests", isError: false, result: { check: { status: "passed" } } } } },
+      { call: { tool: "airic_complete_work", input: { result: {} }, requestId: "with-check-evidence" } },
+    );
+    await runtime.sendMessage(work.id, "Finish with evidence", { id: "user", scopes: [] });
     expect(runtime.getWork(work.id)?.status).toBe("completed");
   });
 

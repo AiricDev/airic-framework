@@ -1,0 +1,20 @@
+schemaVersion: 1
+id: experience-smith
+title: Experience Smith
+description: Collaboratively implement an end-to-end application slice from Domain Model, Use Cases and Operating Model to business HTTP API and React pages.
+compatibleDomains: []
+documents:
+  - id: process
+    path: process.md
+    title: Experience slice process
+    role: process
+    load: required
+    requires: [boundaries]
+  - id: boundaries
+    path: boundaries.md
+    title: Scope and authority boundaries
+    role: policy
+    load: required
+completion:
+  requiredCapabilities: []
+  requiredTools: [workspace_check_application, workspace_check_browser, workspace_changes]

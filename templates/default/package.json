@@ -8,7 +8,8 @@
     "build": "tsc -p tsconfig.json && vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "node --env-file-if-exists=.env --enable-source-maps dist/main.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:browser": "playwright test"
   },
   "dependencies": {
     "@airic/framework": "0.1.0",
@@ -27,6 +28,7 @@
     "@types/react-dom": "19.1.7",
     "@playwright/test": "1.55.0",
     "@vitejs/plugin-react": "5.0.2",
+    "jsdom": "27.0.0",
     "typescript": "5.9.2",
     "vite": "7.1.4",
     "vitest": "3.2.4"

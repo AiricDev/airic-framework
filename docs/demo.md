@@ -2,12 +2,12 @@
 
 ## Simulated business path
 
-1. Build the repository and start `@airic/template-default`.
+1. Build the repository and start `@airic/template-default`, then open the workbench at `http://127.0.0.1:4173/work` (business pages live under `/cases`).
 2. Create a Work from the left rail.
 3. Send `submit`. The Agent tries to finish, the domain rejects the Action because name and email are missing, and the Work remains open.
-4. Send `name is Ada Lovelace, ada@example.com`. The domain commits exactly once and returns a durable receipt; the Work completes and the outcome appears in the workbench.
+4. Send `name is Ada Lovelace, ada@example.com`. The domain commits exactly once and returns a durable receipt; the Work completes and the outcome panel renders the registered case result view, which reads the authoritative record through `GET /api/app/cases/:id`.
 5. Expand Context & trace to inspect the current definition digest/Git state, envelope assembly/delivery, tool calls, Action intent and receipt.
-6. Refresh or restart. Work and trace are rebuilt from the journal; business data is owned by the example application's separate adapter.
+6. Refresh or restart. Work and trace are rebuilt from the journal; business data is owned by the example application's repository under `src/infrastructure/`.
 
 The alternate legal path supplies both facts in the first turn. The sequence is in the Agent operating model; readiness is a domain invariant.
 

@@ -175,8 +175,11 @@ export class AiricRuntime {
     const successfulHarnessTools = new Set(this.getTrace(workId)
       .filter((event) => event.type === "tool.execution")
       .filter((event) => {
-        const payload = event.payload as { phase?: string; isError?: boolean };
-        return payload.phase === "end" && payload.isError === false;
+        const payload = event.payload as { phase?: string; isError?: boolean; name?: string; result?: { changes?: unknown[]; check?: { status?: string } } };
+        if (payload.phase !== "end" || payload.isError !== false) return false;
+        if (payload.name === "workspace_changes") return Array.isArray(payload.result?.changes) && payload.result.changes.length > 0;
+        if (payload.name?.startsWith("workspace_check_")) return payload.result?.check?.status === "passed";
+        return true;
       })
       .map((event) => String((event.payload as { name?: string }).name)));
     const missingTools = definition.manifest.completion.requiredTools.filter((name) => !successfulHarnessTools.has(name));

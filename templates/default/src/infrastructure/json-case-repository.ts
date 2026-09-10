@@ -30,6 +30,11 @@ export class JsonCaseRepository implements CaseRepository {
     return (await this.#read()).cases[id];
   }
 
+  async list(): Promise<CaseRecord[]> {
+    const cases = Object.values((await this.#read()).cases);
+    return cases.sort((a, b) => a.id.localeCompare(b.id));
+  }
+
   async inspect(commandId: string) {
     return (await this.#read()).receipts[commandId];
   }

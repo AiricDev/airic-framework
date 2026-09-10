@@ -22,6 +22,15 @@ async function inspect(path) {
   if (name.includes("templates/default/src/domain/") && /from ["']@airic\//.test(source)) {
     violations.push(`${name}: application domain must not depend on Airic`);
   }
+  if (name.includes("templates/default/src/application/") && /from ["'](?:\.\.\/(?:http|infrastructure|integration|ui)|@airic\/)/.test(source)) {
+    violations.push(`${name}: application use cases must not depend on delivery, infrastructure or Airic`);
+  }
+  if (name.includes("templates/default/src/integration/airic/") && /from ["']\.\.\/\.\.\/infrastructure\//.test(source)) {
+    violations.push(`${name}: Airic capability adapters must consume Application Services, not concrete infrastructure`);
+  }
+  if (name.endsWith("templates/default/src/main.ts") && /from ["']\.\/(?:application|domain|infrastructure|http\/routes)/.test(source)) {
+    violations.push(`${name}: the stable host must consume the application assembly instead of slice internals`);
+  }
   if (name.startsWith("packages/") && /(?:certreport|airic-report)/i.test(source)) {
     violations.push(`${name}: framework package contains an application dependency`);
   }

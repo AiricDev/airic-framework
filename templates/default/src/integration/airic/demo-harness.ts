@@ -12,7 +12,7 @@ export class DemoHarness implements AgentHarness {
       registeredTools: input.tools.map((tool) => tool.name),
     };
     await input.onDelivered(delivery);
-    if (["domain-model-smith", "operating-model-smith"].includes(input.envelope.workDefinition.id)) {
+    if (["domain-model-smith", "operating-model-smith", "experience-smith"].includes(input.envelope.workDefinition.id)) {
       return { text: "This onboarding assistant needs the configured Pi harness and model before it can inspect or change project files." };
     }
     if (input.envelope.workDefinition.id === "reflection") {
@@ -49,10 +49,10 @@ export class DemoHarness implements AgentHarness {
     try {
       const hasAllInformation = Boolean(record.customerName ?? name) && Boolean(record.email ?? email);
       const receipt = await update.invoke({ caseId: "demo", expectedRevision: record.revision, changes: { ...changes, markReady: hasAllInformation || /submit|complete|ready/i.test(input.message) } }, this.#next());
-      const result = (receipt as { result?: unknown }).result;
-      if (!hasAllInformation) return { text: "I saved that information. Please provide the remaining customer detail.", result };
-      await complete.invoke({ result: { type: "case", record: result } }, this.#next());
-      return { text: "The domain accepted the transaction and the case is ready.", result };
+      const committed = (receipt as { result?: { id: string } }).result;
+      if (!hasAllInformation) return { text: "I saved that information. Please provide the remaining customer detail.", result: { type: "case", id: committed?.id ?? "demo" } };
+      await complete.invoke({ result: { type: "case", id: committed?.id ?? "demo" } }, this.#next());
+      return { text: "The domain accepted the transaction and the case is ready.", result: { type: "case", id: committed?.id ?? "demo" } };
     } catch (error) {
       return { text: `The domain did not accept completion yet: ${error instanceof Error ? error.message : String(error)}. Please provide the missing information.` };
     }

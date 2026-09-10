@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { AiricClientError, createAiricClient, type EventSourceMessage } from "../src/index.js";
+import { AiricClientError, createAiricClient, type EventSourceLike, type EventSourceMessage } from "../src/index.js";
+
+class FakeEventSource implements EventSourceLike {
+  readonly listeners = new Map<string, Array<(event: EventSourceMessage) => void>>();
+  closed = false;
+  constructor(readonly url: string) {}
+  addEventListener(type: string, listener: (event: EventSourceMessage) => void): void { this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]); }
+  close(): void { this.closed = true; }
+  emit(type: string, event: EventSourceMessage): void { for (const listener of this.listeners.get(type) ?? []) listener(event); }
+}
 
 describe("AiricClient", () => {
   it("uses the configured base path and maps typed failures", async () => {
@@ -10,11 +19,53 @@ describe("AiricClient", () => {
     expect(request.mock.calls[0]?.[0]).toBe("/api/airic/works");
   });
 
+  it("sends typed request DTOs with JSON bodies", async () => {
+    const request = vi.fn<typeof fetch>().mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ id: "work-1" }), { status: 201 })));
+    const client = createAiricClient({ fetch: request });
+    await client.createWork({ definitionId: "case-assistance", objective: "Help me", domainIds: ["case-management"] });
+    await client.sendMessage("work-1", "hello");
+    const [worksUrl, worksInit] = request.mock.calls[0]!;
+    const [messagesUrl, messagesInit] = request.mock.calls[1]!;
+    expect(worksUrl).toBe("/api/airic/works");
+    expect(worksInit?.method).toBe("POST");
+    expect(worksInit?.headers).toMatchObject({ "content-type": "application/json" });
+    expect(JSON.parse(String(worksInit?.body))).toEqual({ definitionId: "case-assistance", objective: "Help me", input: {}, domainIds: ["case-management"] });
+    expect(messagesUrl).toBe("/api/airic/works/work-1/messages");
+    expect(JSON.parse(String(messagesInit?.body))).toEqual({ message: "hello" });
+  });
+
   it("subscribes to trace events and closes without leaking the source", () => {
     let listener: ((event: EventSourceMessage) => void) | undefined; const close = vi.fn();
-    const client = createAiricClient({ eventSource: () => ({ addEventListener: (_type, value) => { listener = value; }, close }) });
+    const client = createAiricClient({ eventSource: () => ({ addEventListener: (type, value) => { if (type === "trace") listener = value; }, close }) });
     const seen: string[] = []; const cancel = client.subscribeTrace((event) => seen.push(event.eventId));
     listener?.({ data: JSON.stringify({ eventId: "event-1" }), lastEventId: "event-1" }); cancel();
     expect(seen).toEqual(["event-1"]); expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("resumes with the last event id after a disconnect", async () => {
+    const sources: FakeEventSource[] = [];
+    const client = createAiricClient({ reconnectDelayMs: 0, eventSource: (url) => { const source = new FakeEventSource(url); sources.push(source); return source; } });
+    const seen: string[] = [];
+    const cancel = client.subscribeTrace((event) => seen.push(event.eventId));
+    sources[0]!.emit("trace", { data: JSON.stringify({ eventId: "event-1" }), lastEventId: "event-1" });
+    sources[0]!.emit("error", { data: "", lastEventId: "event-1" });
+    expect(sources[0]!.closed).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(sources).toHaveLength(2);
+    expect(sources[1]!.url).toContain("lastEventId=event-1");
+    sources[1]!.emit("trace", { data: JSON.stringify({ eventId: "event-2" }), lastEventId: "event-2" });
+    cancel();
+    expect(seen).toEqual(["event-1", "event-2"]);
+    expect(sources.map((source) => source.closed)).toEqual([true, true]);
+  });
+
+  it("stops reconnecting once the subscription is cancelled", async () => {
+    const sources: FakeEventSource[] = [];
+    const client = createAiricClient({ reconnectDelayMs: 0, eventSource: (url) => { const source = new FakeEventSource(url); sources.push(source); return source; } });
+    const cancel = client.subscribeTrace(() => {});
+    sources[0]!.emit("error", { data: "", lastEventId: "" });
+    cancel();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(sources).toHaveLength(1);
   });
 });

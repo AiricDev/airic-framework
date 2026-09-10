@@ -16,9 +16,9 @@ The default template is the sole source of the basic demo. CI generates and inst
 
 ## Current evidence
 
-- `npm run check`: architecture constraints, TypeScript project graph and 17 contract/recovery tests.
-- `npm run test:browser`: rejection, corrected continuation, committed result, Reflection Work and candidate display.
-- `npm run verify:pack`: packs seven public packages, installs `create-airic` into a clean temporary launcher, generates an app, installs package tarballs, builds, tests and starts its health endpoint.
+- `pnpm run check`: architecture constraints, TypeScript project graph and 53 unit/component tests.
+- `pnpm run test:browser`: template business navigation with partial command commit, rejection, corrected continuation, reference-typed result view, Reflection Work and candidate display.
+- `pnpm run verify:pack`: packs eight public packages, installs `create-airic` into a clean temporary launcher, generates an app, installs package tarballs, builds, tests and starts both its business and Airic health endpoints.
 - `quick_validate.py skills/airic-app-development`: development skill structure and frontmatter valid.
 
 A credentialed Pi/DeepSeek run verified actual provider delivery, multi-step tool use, deterministic rejection, corrected command, completion, journal restart and same-Work session resume. See `docs/live-provider-acceptance.md`. Forced long-context compaction remains the only live Pi environment acceptance not exercised. Public npm publication and CertReporter integration remain intentionally outside this repository milestone.

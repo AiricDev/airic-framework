@@ -28,6 +28,7 @@ export interface AiricClientOptions {
   baseUrl?: string;
   fetch?: typeof globalThis.fetch;
   eventSource?: (url: string) => EventSourceLike;
+  reconnectDelayMs?: number;
 }
 export interface CreateWorkInput { definitionId: string; objective: string; input?: unknown; domainIds?: readonly string[] }
 
@@ -35,10 +36,12 @@ export class AiricClient {
   readonly baseUrl: string;
   readonly #fetch: typeof globalThis.fetch;
   readonly #eventSource: (url: string) => EventSourceLike;
+  readonly #reconnectDelayMs: number;
   constructor(options: AiricClientOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "/api/airic").replace(/\/$/u, "");
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.#eventSource = options.eventSource ?? ((url) => new EventSource(url) as unknown as EventSourceLike);
+    this.#reconnectDelayMs = options.reconnectDelayMs ?? 1000;
   }
   health(): Promise<{ ok: boolean }> { return this.#get("/health"); }
   listWorks(): Promise<WorkDto[]> { return this.#get("/works"); }
@@ -55,9 +58,29 @@ export class AiricClient {
   getWorkspace(): Promise<WorkspaceStatusDto> { return this.#get("/workspace"); }
   uploadEvidence(workId: string, input: { name: string; mediaType: string; contentBase64: string }): Promise<{ ref: unknown }> { return this.#post(`/works/${encodeURIComponent(workId)}/uploads`, input); }
   subscribeTrace(listener: (event: TraceDto) => void): () => void {
-    const source = this.#eventSource(`${this.baseUrl}/events`);
-    source.addEventListener("trace", (event) => listener(JSON.parse(event.data) as TraceDto));
-    return () => source.close();
+    let lastEventId: string | undefined;
+    let source: EventSourceLike | undefined;
+    let reconnect: ReturnType<typeof setTimeout> | undefined;
+    let cancelled = false;
+    const open = () => {
+      if (cancelled) return;
+      const url = lastEventId ? `${this.baseUrl}/events?lastEventId=${encodeURIComponent(lastEventId)}` : `${this.baseUrl}/events`;
+      source = this.#eventSource(url);
+      source.addEventListener("trace", (event) => { const trace = JSON.parse(event.data) as TraceDto; lastEventId = event.lastEventId || trace.eventId; listener(trace); });
+      source.addEventListener("error", () => {
+        source?.close();
+        source = undefined;
+        if (cancelled || reconnect) return;
+        reconnect = setTimeout(() => { reconnect = undefined; open(); }, this.#reconnectDelayMs);
+      });
+    };
+    open();
+    return () => {
+      cancelled = true;
+      if (reconnect) { clearTimeout(reconnect); reconnect = undefined; }
+      source?.close();
+      source = undefined;
+    };
   }
   async #get<T>(path: string): Promise<T> { return this.#checked<T>(await this.#fetch(`${this.baseUrl}${path}`)); }
   async #post<T>(path: string, body: unknown): Promise<T> { return this.#checked<T>(await this.#fetch(`${this.baseUrl}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })); }
