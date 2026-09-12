@@ -15,12 +15,14 @@ export interface WorkspaceCheck {
 }
 
 export interface WorkspaceGrant {
-  definitionId: string;
+  moduleId: string;
+  workTypeId: string;
   read: readonly string[];
   denyRead?: readonly string[];
   write: readonly string[];
   denyWrite?: readonly string[];
   checks?: readonly WorkspaceCheck[];
+  target?: { root: string; inputKey: string };
 }
 
 export interface WorkspacePolicy {
@@ -38,9 +40,10 @@ const mutationQueues = new Map<string, Promise<void>>();
 const secretNames = new Set([".env", "models.json", "models-store.json", "auth.json"]);
 const ignoredSegments = new Set([".airic", ".git", "node_modules", "dist", "coverage", "playwright-report", "test-results"]);
 
-export async function createWorkspaceTools(input: { policy: WorkspacePolicy; definitionId: string; stateDirectory: string }): Promise<ToolDefinition[]> {
-  const grant = input.policy.grants.find((candidate) => candidate.definitionId === input.definitionId);
-  if (!grant) return [];
+export async function createWorkspaceTools(input: { policy: WorkspacePolicy; moduleId: string; workTypeId: string; workInput?: unknown; stateDirectory: string }): Promise<ToolDefinition[]> {
+  const configuredGrant = input.policy.grants.find((candidate) => candidate.moduleId === input.moduleId && candidate.workTypeId === input.workTypeId);
+  if (!configuredGrant) return [];
+  const grant = scopedGrant(configuredGrant, input.workInput);
   const root = await realpath(resolve(input.policy.root));
   const statePath = resolve(input.stateDirectory, "workspace-state.json");
   await mkdir(input.stateDirectory, { recursive: true });
@@ -96,7 +99,7 @@ export async function createWorkspaceTools(input: { policy: WorkspacePolicy; def
     parameters: Type.Object({}), execute: async () => {
       const changedFiles = await changes(root, grant, state, true);
       if (!changedFiles.length) throw new Error("WorkspaceChangeRequired: no files changed in this Work");
-      return result(JSON.stringify(changedFiles, null, 2), { changes: changedFiles });
+      return result(JSON.stringify(changedFiles, null, 2), { changes: changedFiles, changeSetDigest: digest(JSON.stringify(changedFiles)) });
     },
   });
   const checks = (grant.checks ?? []).map((check) => defineTool({
@@ -108,10 +111,21 @@ export async function createWorkspaceTools(input: { policy: WorkspacePolicy; def
       }
       const run = promisify(execFile);
       const { stdout, stderr } = await run(check.command, [...(check.args ?? [])], { cwd: root, env: safeEnvironment(), maxBuffer: 4 * 1024 * 1024 });
-      return result(`${stdout}${stderr}`.trim() || `${check.title} passed`, { check: { id: check.id, title: check.title, status: "passed" }, changes: changedFiles });
+      return result(`${stdout}${stderr}`.trim() || `${check.title} passed`, { check: { id: check.id, title: check.title, status: "passed" }, changes: changedFiles, changeSetDigest: digest(JSON.stringify(changedFiles)) });
     },
   }));
   return [readTool, listTool, searchTool, writeTool, editTool, statusTool, diffTool, changesTool, ...checks];
+}
+
+function scopedGrant(grant: WorkspaceGrant, workInput: unknown): WorkspaceGrant {
+  if (!grant.target) return grant;
+  if (!workInput || typeof workInput !== "object" || Array.isArray(workInput)) throw new Error(`WorkspaceTargetRequired: ${grant.target.inputKey}`);
+  const value = (workInput as Record<string, unknown>)[grant.target.inputKey];
+  if (typeof value !== "string" || !/^[a-z0-9][a-z0-9-]*$/u.test(value)) throw new Error(`WorkspaceTargetInvalid: ${grant.target.inputKey}`);
+  const targetRoot = `${grant.target.root.replace(/^\.\//u, "").replace(/\/$/u, "")}/${value}`;
+  if (!matchesAny(targetRoot, grant.write) || matchesAny(targetRoot, grant.denyWrite ?? [])) throw new Error(`WorkspaceTargetDenied: ${targetRoot}`);
+  const { target: _target, ...rest } = grant;
+  return { ...rest, write: [targetRoot] };
 }
 
 export function checkToolName(id: string): string { return `workspace_check_${id.replace(/[^a-zA-Z0-9_-]/g, "_")}`; }

@@ -8,7 +8,7 @@ const run = promisify(execFile);
 
 const requested = process.argv[2];
 if (!requested || requested === "--help" || requested === "-h") {
-  console.log("Usage: pnpm create airic@0.1.0 <directory>");
+  console.log("Usage: pnpm create airic@0.2.0 <directory>");
   process.exit(requested ? 0 : 1);
 }
 
@@ -24,24 +24,26 @@ await rename(resolve(target, "gitignore.template"), resolve(target, ".gitignore"
 const name = basename(target).toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
 const packageJson = {
   name,
-  version: "0.1.0",
+  version: "0.2.0",
   private: true,
   type: "module",
   engines: { node: ">=24" },
   scripts: {
     build: "tsc -p tsconfig.json && vite build",
+    "architecture:check": "node scripts/architecture-check.mjs",
+    check: "pnpm run architecture:check && pnpm run typecheck && pnpm test",
     dev: "node --env-file-if-exists=.env --enable-source-maps dist/main.js",
     test: "vitest run",
     "test:browser": "playwright test",
     typecheck: "tsc -p tsconfig.json --noEmit",
   },
   dependencies: {
-    "@airic/client": "0.1.0",
-    "@airic/framework": "0.1.0",
-    "@airic/harness-pi": "0.1.0",
-    "@airic/server": "0.1.0",
-    "@airic/storage-files": "0.1.0",
-    "@airic/ui": "0.1.0",
+    "@airic/client": "0.2.0",
+    "@airic/framework": "0.2.0",
+    "@airic/harness-pi": "0.2.0",
+    "@airic/server": "0.2.0",
+    "@airic/storage-files": "0.2.0",
+    "@airic/ui": "0.2.0",
     "react": "19.1.1",
     "react-dom": "19.1.1",
     "react-router": "7.18.3"
@@ -69,6 +71,7 @@ const tsconfig = {
     esModuleInterop: true,
     jsx: "react-jsx",
     outDir: "dist",
+    types: ["vite/client", "node"],
     rootDir: "src"
   },
   include: ["src/**/*.ts", "src/**/*.tsx"]

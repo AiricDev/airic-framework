@@ -3,9 +3,7 @@ import { expect, test } from "@playwright/test";
 test("creates and completes a governed transaction in simulated mode", async ({ page }) => {
   await page.goto("/work");
   await expect(page.getByRole("heading", { name: "Start a governed work" })).toBeVisible();
-  await expect(page.getByRole("button", { name: /Create Domain Model/ })).toBeDisabled();
-  await expect(page.getByRole("button", { name: /Create Operating Model/ })).toBeDisabled();
-  await expect(page.getByRole("button", { name: /Create Experience Slice/ })).toBeDisabled();
+  await expect(page.getByRole("button", { name: /Develop a Module/ })).toBeDisabled();
   await expect(page.getByRole("button", { name: /Run Example Work/ })).toBeEnabled();
   await page.getByRole("button", { name: "New work" }).click();
   await expect(page.getByRole("heading", { name: "Help me complete this transaction" })).toBeVisible();

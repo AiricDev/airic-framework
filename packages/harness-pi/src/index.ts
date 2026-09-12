@@ -31,6 +31,7 @@ export interface PiHarnessOptions {
 }
 
 interface ActiveCall {
+  workInput: unknown;
   envelope: ContextEnvelope;
   refreshContext(): Promise<ContextEnvelope>;
   onDelivered(record: DeliveryRecord): Promise<void>;
@@ -39,19 +40,19 @@ interface ActiveCall {
 interface SessionBinding { session: AgentSession; active: ActiveCall; disposeSubscription: () => void; flush(): Promise<void> }
 
 export class PiHarness implements AgentHarness {
-  static readonly adapterVersion = "0.1.0+pi-0.80.10";
+  static readonly adapterVersion = "0.2.0+pi-0.80.10";
   readonly #options: PiHarnessOptions;
   readonly #sessions = new Map<string, SessionBinding>();
   readonly #creating = new Map<string, Promise<SessionBinding>>();
 
   constructor(options: PiHarnessOptions) { this.#options = { ...options, cwd: resolve(options.cwd), sessionDirectory: resolve(options.sessionDirectory) }; }
-  capabilities() { return { resume: true, interrupt: true, contextHook: true, compactionTrace: true, workspaceDefinitions: this.#options.workspace?.grants.map((grant) => grant.definitionId) ?? [] }; }
+  capabilities() { return { resume: true, interrupt: true, contextHook: true, compactionTrace: true, workspaceWorkTypes: this.#options.workspace?.grants.map((grant) => `${grant.moduleId}/${grant.workTypeId}`) ?? [] }; }
 
   async run(input: {
-    workId: string; message: string; envelope: ContextEnvelope; tools: readonly HarnessTool[]; refreshContext(): Promise<ContextEnvelope>; signal?: AbortSignal;
+    workId: string; workInput: unknown; message: string; envelope: ContextEnvelope; tools: readonly HarnessTool[]; refreshContext(): Promise<ContextEnvelope>; signal?: AbortSignal;
     onDelivered(record: DeliveryRecord): Promise<void>; onEvent(event: HarnessEvent): Promise<void>;
   }): Promise<{ text: string }> {
-    const active: ActiveCall = { envelope: input.envelope, refreshContext: input.refreshContext, onDelivered: input.onDelivered, onEvent: input.onEvent };
+    const active: ActiveCall = { workInput: input.workInput, envelope: input.envelope, refreshContext: input.refreshContext, onDelivered: input.onDelivered, onEvent: input.onEvent };
     const binding = await this.#binding(input.workId, input.tools, active);
     binding.active = active;
     let text = "";
@@ -90,7 +91,7 @@ export class PiHarness implements AgentHarness {
   async #createBinding(workId: string, tools: readonly HarnessTool[], active: ActiveCall): Promise<SessionBinding> {
     const sessionDirectory = join(this.#options.sessionDirectory, workId);
     await mkdir(sessionDirectory, { recursive: true });
-    const workspaceTools = this.#options.workspace ? await createWorkspaceTools({ policy: this.#options.workspace, definitionId: active.envelope.workDefinition.id, stateDirectory: sessionDirectory }) : [];
+    const workspaceTools = this.#options.workspace ? await createWorkspaceTools({ policy: this.#options.workspace, moduleId: active.envelope.workType.moduleId, workTypeId: active.envelope.workType.workTypeId, workInput: active.workInput, stateDirectory: sessionDirectory }) : [];
     const holder: { active: ActiveCall } = { active };
     let eventWrites = Promise.resolve();
     const resourceLoader = new DefaultResourceLoader({

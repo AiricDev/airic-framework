@@ -12,6 +12,7 @@ export interface SourceLocator {
 export interface TrustedCallContext {
   actor: { id: string; scopes: readonly string[] };
   workId: string;
+  workType: { moduleId: string; workTypeId: string; operatingDigest: string };
   actionId?: string;
   commandId?: string;
   expectedDomainRelease: string;
@@ -42,8 +43,9 @@ export interface CapabilityBinding {
   invoke(context: TrustedCallContext, input: unknown): Promise<unknown>;
 }
 
-export interface DomainModule {
+export interface DomainProvider {
   id: string;
+  moduleId: string;
   release: string;
   buildId: string;
   sourceBundle: VersionedRef & { digest: string };
@@ -53,7 +55,7 @@ export interface DomainModule {
   inspectCommand?(context: TrustedCallContext, commandId: string): Promise<CommandInspection | undefined>;
 }
 
-export function bindingRef(module: DomainModule): DomainBindingRef {
+export function bindingRef(module: DomainProvider): DomainBindingRef {
   return { id: module.id, release: module.release, buildId: module.buildId, sourceDigest: module.sourceBundle.digest };
 }
 

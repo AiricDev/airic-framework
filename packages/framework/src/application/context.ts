@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Work } from "../domain/work.js";
-import type { DomainModule } from "../integration/contracts.js";
+import type { DomainProvider } from "../integration/contracts.js";
 import type { WorkDefinition } from "./work-definition.js";
 
 export interface ContextBlock {
@@ -24,7 +24,7 @@ export interface ContextEnvelope {
   workId: string;
   sequence: number;
   assemblerVersion: "airic-context-v1";
-  workDefinition: { id: string; digest: string; gitHead?: string; dirty: boolean };
+  workType: { moduleId: string; workTypeId: string; operatingDigest: string; gitHead?: string; dirty: boolean };
   domainBindings: Work["domainBindings"];
   instructions: readonly ContextBlock[];
   observations: readonly ContextBlock[];
@@ -35,7 +35,7 @@ export interface ContextEnvelope {
   digest: string;
 }
 
-export function assembleContext(input: { work: Work; definition: WorkDefinition; domains: readonly DomainModule[]; sequence: number }): ContextEnvelope {
+export function assembleContext(input: { work: Work; definition: WorkDefinition; domains: readonly DomainProvider[]; sequence: number }): ContextEnvelope {
   const selected = new Set(input.work.selectedContent);
   const documents = [...input.definition.required, ...[...input.definition.documents.values()].filter((doc) => selected.has(doc.id))]
     .filter((doc, index, all) => all.findIndex((candidate) => candidate.id === doc.id) === index);
@@ -58,7 +58,7 @@ export function assembleContext(input: { work: Work; definition: WorkDefinition;
   ];
   const body = {
     workId: input.work.id, sequence: input.sequence,
-    workDefinition: { id: input.work.definition.id, digest: input.definition.digest, ...input.definition.source },
+    workType: { ...input.work.workType, operatingDigest: input.definition.digest, ...input.definition.source },
     domainBindings: input.work.domainBindings,
     instructions, observations, capabilityCatalog, availableCapabilities: capabilityCatalog.map((item) => item.id),
     discoverableContent: input.definition.discoverable, provenance,
@@ -68,8 +68,8 @@ export function assembleContext(input: { work: Work; definition: WorkDefinition;
 
 export function renderContextEnvelope(envelope: ContextEnvelope): string {
   const instructions = envelope.instructions.map((item) => `## ${item.title}\n\n${item.content}`).join("\n\n");
-  const git = envelope.workDefinition.gitHead ? `\nGit: ${envelope.workDefinition.gitHead}${envelope.workDefinition.dirty ? " (dirty)" : ""}` : "";
-  return `# Airic governed work\n\nWork: ${envelope.workId}\nDefinition: ${envelope.workDefinition.id}\nDefinition digest: ${envelope.workDefinition.digest}${git}\nEnvelope: ${envelope.digest}\n\n${instructions}\n\n## Current observations\n\n${envelope.observations.map((item) => item.content).join("\n")}`;
+  const git = envelope.workType.gitHead ? `\nGit: ${envelope.workType.gitHead}${envelope.workType.dirty ? " (dirty)" : ""}` : "";
+  return `# Airic governed work\n\nWork: ${envelope.workId}\nModule: ${envelope.workType.moduleId}\nWorkType: ${envelope.workType.workTypeId}\nOperating digest: ${envelope.workType.operatingDigest}${git}\nEnvelope: ${envelope.digest}\n\n${instructions}\n\n## Current observations\n\n${envelope.observations.map((item) => item.content).join("\n")}`;
 }
 
 export function hash(value: string | Uint8Array): string { return createHash("sha256").update(value).digest("hex"); }

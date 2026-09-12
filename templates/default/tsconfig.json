@@ -1,6 +1,6 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "outDir": "dist", "rootDir": "src", "composite": true, "jsx": "react-jsx" },
+  "compilerOptions": { "outDir": "dist", "rootDir": "src", "composite": true, "jsx": "react-jsx", "types": ["vite/client", "node"] },
   "include": ["src/**/*.ts", "src/**/*.tsx"],
   "references": [
     { "path": "../../packages/framework" },

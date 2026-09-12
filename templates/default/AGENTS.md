@@ -1,8 +1,9 @@
 # Airic application boundaries
 
-- Keep `src/domain` and `src/application` independent of Airic, Pi, HTTP, files, and React.
-- Expose use cases through a DomainModule in `src/integration/airic`; commands must return durable receipts and support inspection by command ID.
-- Register shared services and DomainModules in `src/integration/application.ts`, business API routes in `src/http/routes.ts`, and pages in `src/ui/routes.tsx`; keep `src/main.ts` and `src/client.tsx` stable.
-- Express flexible work methods in `work-definitions`; do not compile them into a workflow state machine.
-- Extend the workbench with result views that store business references, instead of copying its source.
-- Use the version-matched `airic-app-development` skill before changing architecture.
+- `src/app` owns composition, identity, HTTP hosting, navigation and shutdown. Keep `main.ts` and `client.tsx` stable.
+- `src/modules/<module-id>` owns a vertical slice: Domain, use cases, Operating Model, Experience, adapters and tests that change together.
+- Domain and Application code stay independent of Airic, HTTP, React and storage. Expose Agent operations through a module `DomainProvider`; commands return durable, inspectable receipts.
+- Cross-module imports use the provider module's `public/` contracts and a consumer-owned port. Never deep-import another module or access its repository.
+- WorkTypes live below their owning module's `operating/` directory. Git owns source history; Airic reloads Operating content before each model turn.
+- Add module routes, pages, result views and starters through `module.yml` contributions. Do not edit the host route table for a business feature.
+- Business writes enter an Application use case, which revalidates identity, authority, versions and invariants at commit time.

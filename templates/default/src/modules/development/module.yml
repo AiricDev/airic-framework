@@ -1,0 +1,12 @@
+schemaVersion: 1
+id: development
+title: Development
+description: Governed module development and operating-model reflection.
+imports:
+  domains: []
+workTypes:
+  - id: module-smith
+    path: operating/module-smith
+  - id: reflection
+    path: operating/reflection
+contributions: {}

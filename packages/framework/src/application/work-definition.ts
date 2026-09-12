@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import YAML from "yaml";
 import { z } from "zod";
-import type { DefinitionSource } from "./ports.js";
+import type { WorkTypeRef } from "../domain/work.js";
+import type { WorkTypeSource } from "./ports.js";
 
 const documentSchema = z.object({
   id: z.string().min(1),
@@ -17,7 +18,10 @@ const manifestSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
   description: z.string().default(""),
-  compatibleDomains: z.array(z.object({ id: z.string(), release: z.string().optional() })).default([]),
+  capabilities: z.object({
+    allowed: z.array(z.string()).default([]),
+  }).default({ allowed: [] }),
+  extensions: z.record(z.string(), z.unknown()).default({}),
   documents: z.array(documentSchema).min(1),
   completion: z.object({
     requiredCapabilities: z.array(z.string()).default([]),
@@ -40,11 +44,16 @@ function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-export async function loadWorkDefinition(source: DefinitionSource, definitionId: string): Promise<WorkDefinition> {
-  const raw = await source.readManifest(definitionId);
+export async function loadWorkDefinition(source: WorkTypeSource, ref: WorkTypeRef & { packagePath: string }): Promise<WorkDefinition> {
+  const raw = await source.readManifest(ref);
   const value = typeof raw === "string" ? YAML.parse(raw) : raw;
   const manifest = manifestSchema.parse(value);
-  if (manifest.id !== definitionId) throw new Error(`Definition id mismatch: expected ${definitionId}, got ${manifest.id}`);
+  if (manifest.id !== ref.workTypeId) throw new Error(`WorkType id mismatch: expected ${ref.workTypeId}, got ${manifest.id}`);
+  const allowedCapabilities = new Set(manifest.capabilities.allowed);
+  const undeclaredCompletionCapabilities = manifest.completion.requiredCapabilities.filter((id) => !allowedCapabilities.has(id));
+  if (undeclaredCompletionCapabilities.length) {
+    throw new Error(`Completion capabilities must be allowed by the Work Definition: ${undeclaredCompletionCapabilities.join(", ")}`);
+  }
   const ids = new Set(manifest.documents.map((doc) => doc.id));
   const paths = new Set<string>();
   for (const doc of manifest.documents) {
@@ -55,7 +64,7 @@ export async function loadWorkDefinition(source: DefinitionSource, definitionId:
   }
   const docs = new Map<string, LoadedDocument>();
   for (const spec of manifest.documents) {
-    const content = await source.readDocument(definitionId, spec.path);
+    const content = await source.readDocument(ref, spec.path);
     docs.set(spec.id, { ...spec, content, digest: digest(content) });
   }
   const requiredIds = new Set(manifest.documents.filter((doc) => doc.load === "required").map((doc) => doc.id));
@@ -66,10 +75,10 @@ export async function loadWorkDefinition(source: DefinitionSource, definitionId:
   };
   for (const id of [...requiredIds]) visit(id);
   const packageFiles = [];
-  for (const path of await source.listDefinitionFiles(definitionId)) {
+  for (const path of await source.listWorkTypeFiles(ref)) {
     const content = path === "work.yml"
       ? (typeof raw === "string" ? raw : JSON.stringify(value))
-      : await source.readDocument(definitionId, path);
+      : await source.readDocument(ref, path);
     packageFiles.push({ path, digest: digest(content) });
   }
   const packageDigest = digest(JSON.stringify(packageFiles.sort((a, b) => a.path.localeCompare(b.path))));

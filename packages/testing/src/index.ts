@@ -16,7 +16,7 @@ export class FakeHarness implements AgentHarness {
   enqueue(...steps: FakeHarnessStep[]): this { this.#scripts.push(steps); return this; }
   capabilities() { return { resume: true, interrupt: true, contextHook: true, compactionTrace: true }; }
   async run(input: {
-    workId: string; message: string; envelope: ContextEnvelope; tools: readonly HarnessTool[]; refreshContext(): Promise<ContextEnvelope>; signal?: AbortSignal;
+    workId: string; workInput: unknown; message: string; envelope: ContextEnvelope; tools: readonly HarnessTool[]; refreshContext(): Promise<ContextEnvelope>; signal?: AbortSignal;
     onDelivered(record: DeliveryRecord): Promise<void>; onEvent(event: HarnessEvent): Promise<void>;
   }): Promise<{ text: string; result?: unknown }> {
     this.envelopes.push(input.envelope); this.calls.push({ workId: input.workId, message: input.message });
@@ -57,10 +57,15 @@ export class MemoryRuntimeStore {
   async getObject(digest: string): Promise<Uint8Array> { const value = this.objects.get(digest); if (!value) throw new Error("Missing object"); return value; }
 }
 
-export class MemoryDefinitionSource {
-  constructor(readonly definitions: Record<string, { manifest: unknown; documents: Record<string, string> }>) {}
-  async readManifest(id: string): Promise<unknown> { return this.definitions[id]?.manifest ?? missing(id); }
-  async readDocument(id: string, path: string): Promise<string> { return this.definitions[id]?.documents[path] ?? missing(`${id}/${path}`); }
-  async listDefinitionFiles(id: string): Promise<readonly string[]> { return ["work.yml", ...Object.keys(this.definitions[id]?.documents ?? {})]; }
+export class MemoryModuleSource {
+  constructor(
+    readonly modules: Record<string, { manifest: unknown }>,
+    readonly definitions: Record<string, { manifest: unknown; documents: Record<string, string> }>,
+  ) {}
+  async listModules(): Promise<readonly string[]> { return Object.keys(this.modules); }
+  async readModuleManifest(id: string): Promise<unknown> { return this.modules[id]?.manifest ?? missing(id); }
+  async readManifest(ref: { moduleId: string; workTypeId: string }): Promise<unknown> { return this.definitions[`${ref.moduleId}/${ref.workTypeId}`]?.manifest ?? missing(`${ref.moduleId}/${ref.workTypeId}`); }
+  async readDocument(ref: { moduleId: string; workTypeId: string }, path: string): Promise<string> { return this.definitions[`${ref.moduleId}/${ref.workTypeId}`]?.documents[path] ?? missing(`${ref.moduleId}/${ref.workTypeId}/${path}`); }
+  async listWorkTypeFiles(ref: { moduleId: string; workTypeId: string }): Promise<readonly string[]> { return ["work.yml", ...Object.keys(this.definitions[`${ref.moduleId}/${ref.workTypeId}`]?.documents ?? {})]; }
 }
 function missing(id: string): never { throw new Error(`Missing fixture ${id}`); }

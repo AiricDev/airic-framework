@@ -1,0 +1,25 @@
+schemaVersion: 1
+id: case-assistance
+title: Transaction assistance
+description: Help a customer complete a case while domain code enforces readiness.
+capabilities:
+  allowed: [case.get, case.update]
+documents:
+  - id: process
+    path: process.md
+    title: Transaction assistance process
+    role: process
+    load: required
+    requires: [policy]
+  - id: policy
+    path: policy.md
+    title: Interaction and evidence policy
+    role: policy
+    load: required
+  - id: alternatives
+    path: precedents/alternative-paths.md
+    title: Alternative information collection paths
+    role: precedent
+    load: on-demand
+completion:
+  requiredCapabilities: [case.update]

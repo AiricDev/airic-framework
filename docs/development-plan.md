@@ -5,7 +5,8 @@ This file is the implementation ledger for the v0.4 technical design. A phase is
 | Phase | Deliverable | Status | Evidence |
 | --- | --- | --- | --- |
 | F0 | Packages, build, architecture gate, file journal, FakeHarness, generator, workbench, developer skill, Pi hook probe | implemented and verified | Architecture gate; Pi bridge probe; packed generated-app acceptance |
-| F1 | Work Definition loading, DomainModule, source retrieval, ContextEnvelope, Pi adapter, end-to-end Work | implemented and live-provider verified | Runtime contracts, simulated browser path, and a real Pi/DeepSeek rejection-recovery-completion run |
+| F1 | WorkType loading, DomainProvider binding, source retrieval, ContextEnvelope, Pi adapter, end-to-end Work | implemented and live-provider verified | Runtime contracts, simulated browser path, and a real Pi/DeepSeek rejection-recovery-completion run |
+| F5 | Application-composed Modules, module-local Vertical Slices, WorkType identity, Module Smith | implemented; current release gates are recorded below | Module resolver tests, modular generated app, module boundary architecture checks, and Cert Reporter migration |
 | F2 | Recovery, idempotency/reconciliation, SSE reconnect, interruption and context-change trace | implemented and verified except forced live compaction | Fault injection, unknown reconciliation, snapshots, single writer, live definition reload, browser refresh, journal restart and Pi session resume |
 | F3 | Git-backed generator, uploads, result views, Smith onboarding and skill | implemented and verified | Single-directory definition source, Git initialization, evidence upload, workspace policy, result-view registry, validated skill and tarball-only generated app |
 | F4 | Reflection Work and reviewable Markdown/code candidates linked to Git/domain releases | implemented and verified in the example | Browser Reflection Work, candidate object/trace, Git diff handoff and domain release binding contracts |

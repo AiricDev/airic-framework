@@ -3,7 +3,7 @@ export interface WorkDto {
   objective: string;
   input: unknown;
   status: "open" | "completed" | "cancelled";
-  definition: { id: string };
+  workType: { moduleId: string; workTypeId: string };
   domainBindings: readonly unknown[];
   selectedContent: readonly string[];
   result?: unknown;
@@ -13,10 +13,10 @@ export interface WorkDto {
 }
 export interface TraceDto { eventId: string; workId: string; type: string; timestamp: string; actor: string; payload: unknown }
 export interface WorkDetailDto { work: WorkDto; trace: TraceDto[] }
-export interface DefinitionSummaryDto { id: string; title: string; digest: string }
-export interface DefinitionFilesDto { digest: string; files: Record<string, string> }
+export interface WorkTypeSummaryDto { moduleId: string; workTypeId: string; title: string; digest: string }
+export interface WorkTypeFilesDto { digest: string; files: Record<string, string> }
 export interface WorkspaceStatusDto { gitHead?: string; dirty: boolean; status: string; diff: string }
-export interface HarnessCapabilitiesDto { resume: boolean; interrupt: boolean; contextHook: boolean; compactionTrace: boolean; workspaceDefinitions?: string[] }
+export interface HarnessCapabilitiesDto { resume: boolean; interrupt: boolean; contextHook: boolean; compactionTrace: boolean; workspaceWorkTypes?: string[] }
 export interface AiricErrorBody { error: string; code?: string; details?: unknown }
 export class AiricClientError extends Error {
   constructor(message: string, readonly status: number, readonly code?: string, readonly details?: unknown) { super(message); this.name = "AiricClientError"; }
@@ -30,7 +30,7 @@ export interface AiricClientOptions {
   eventSource?: (url: string) => EventSourceLike;
   reconnectDelayMs?: number;
 }
-export interface CreateWorkInput { definitionId: string; objective: string; input?: unknown; domainIds?: readonly string[] }
+export interface CreateWorkInput { moduleId: string; workTypeId: string; objective: string; input?: unknown }
 
 export class AiricClient {
   readonly baseUrl: string;
@@ -45,15 +45,15 @@ export class AiricClient {
   }
   health(): Promise<{ ok: boolean }> { return this.#get("/health"); }
   listWorks(): Promise<WorkDto[]> { return this.#get("/works"); }
-  createWork(input: CreateWorkInput): Promise<WorkDto> { return this.#post("/works", { input: {}, domainIds: [], ...input }); }
+  createWork(input: CreateWorkInput): Promise<WorkDto> { return this.#post("/works", { input: {}, ...input }); }
   getWork(id: string): Promise<WorkDetailDto> { return this.#get(`/works/${encodeURIComponent(id)}`); }
   getTrace(id: string): Promise<TraceDto[]> { return this.#get(`/works/${encodeURIComponent(id)}/trace`); }
   sendMessage(id: string, message: string): Promise<{ text: string; result?: unknown }> { return this.#post(`/works/${encodeURIComponent(id)}/messages`, { message }); }
   interrupt(id: string): Promise<{ interrupted: boolean }> { return this.#post(`/works/${encodeURIComponent(id)}/interrupt`, {}); }
   complete(id: string, result: unknown): Promise<WorkDto> { return this.#post(`/works/${encodeURIComponent(id)}/complete`, { result }); }
   createReflection(input: CreateWorkInput): Promise<WorkDto> { return this.createWork(input); }
-  listDefinitions(): Promise<DefinitionSummaryDto[]> { return this.#get("/definitions"); }
-  getDefinition(id: string): Promise<DefinitionFilesDto> { return this.#get(`/definitions/${encodeURIComponent(id)}`); }
+  listWorkTypes(): Promise<WorkTypeSummaryDto[]> { return this.#get("/work-types"); }
+  getWorkType(moduleId: string, workTypeId: string): Promise<WorkTypeFilesDto> { return this.#get(`/work-types/${encodeURIComponent(moduleId)}/${encodeURIComponent(workTypeId)}`); }
   getCapabilities(): Promise<HarnessCapabilitiesDto> { return this.#get("/capabilities"); }
   getWorkspace(): Promise<WorkspaceStatusDto> { return this.#get("/workspace"); }
   uploadEvidence(workId: string, input: { name: string; mediaType: string; contentBase64: string }): Promise<{ ref: unknown }> { return this.#post(`/works/${encodeURIComponent(workId)}/uploads`, input); }

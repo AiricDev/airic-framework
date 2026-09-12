@@ -1,6 +1,6 @@
 {
   "name": "@airic/harness-pi",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -8,7 +8,7 @@
   "files": ["dist"],
   "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit" },
   "dependencies": {
-    "@airic/framework": "0.1.0",
+    "@airic/framework": "workspace:*",
     "@earendil-works/pi-ai": "0.80.10",
     "@earendil-works/pi-coding-agent": "0.80.10",
     "typebox": "1.1.38"

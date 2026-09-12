@@ -1,6 +1,6 @@
 # Airic Framework Architecture Map
 
-- Last updated: 2026-09-10
+- Last updated: 2026-09-11
 - Architectural decision owners: Airic maintainers
 
 ## Layer layout
@@ -31,6 +31,8 @@
 - The application assembly constructs each Application Service once and shares it with HTTP routes and Airic DomainModules.
 - `src/main.ts` and `src/client.tsx` are stable host roots; Smiths do not modify them.
 - Workspace read and write authority is declared per Work Definition by the host; tool evidence is validated before completion.
+- Workspace grants may narrow writes to a validated Work-input target, so a Smith cannot modify sibling packages.
+- Domain capabilities are deny-by-default at the Work Definition boundary; `capabilities.allowed` controls the catalog and tools delivered to a Work, and completion requirements must be a subset.
 - Dependency rules are enforced by `scripts/architecture-check.mjs` and the package test suites.
 
 ## Boundary debts

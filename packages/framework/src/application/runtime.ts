@@ -1,31 +1,31 @@
 import { randomUUID } from "node:crypto";
 import { prepareAction, settleAction, type Action } from "../domain/action.js";
 import { createWork, reviseWork, type Work } from "../domain/work.js";
-import { bindingRef, DomainInvocationError, type CommandReceipt, type DomainModule, type TrustedCallContext } from "../integration/contracts.js";
+import { bindingRef, DomainInvocationError, type CommandReceipt, type DomainProvider, type TrustedCallContext } from "../integration/contracts.js";
 import { assembleContext, hash } from "./context.js";
-import type { AgentHarness, DefinitionSource, HarnessTool, RuntimeEvent, RuntimeStore, TraceEvent } from "./ports.js";
+import type { AgentHarness, HarnessTool, RuntimeEvent, RuntimeStore, TraceEvent } from "./ports.js";
 import { loadWorkDefinition, type WorkDefinition } from "./work-definition.js";
+import type { ModuleRegistry } from "./module.js";
 
 export interface RuntimeOptions {
   store: RuntimeStore;
   harness: AgentHarness;
-  definitions: DefinitionSource;
+  modules: ModuleRegistry;
   now?: () => Date;
   id?: () => string;
 }
 
 export interface CreateWorkInput {
-  definitionId: string;
+  moduleId: string;
+  workTypeId: string;
   objective: string;
   input?: unknown;
-  domainIds: readonly string[];
 }
 
 export class AiricRuntime {
   readonly #works = new Map<string, Work>();
   readonly #actions = new Map<string, Action>();
   readonly #trace: TraceEvent[] = [];
-  readonly #domains = new Map<string, DomainModule>();
   readonly #listeners = new Set<(event: TraceEvent) => void>();
   readonly #controllers = new Map<string, AbortController>();
   readonly #now: () => Date;
@@ -46,24 +46,9 @@ export class AiricRuntime {
     await this.options.store.close();
   }
 
-  registerDomain(module: DomainModule): void {
-    const current = this.#domains.get(module.id);
-    if (current && current.release === module.release && current.buildId !== module.buildId) {
-      throw new Error(`Domain ${module.id}@${module.release} was registered with two build ids`);
-    }
-    const capabilityIds = new Set<string>();
-    for (const capability of module.capabilities) {
-      if (capabilityIds.has(capability.id)) throw new Error(`Duplicate capability ${capability.id}`);
-      capabilityIds.add(capability.id);
-      if (capability.kind === "command" && !module.inspectCommand) {
-        throw new Error(`Command capability ${capability.id} requires inspectCommand`);
-      }
-    }
-    this.#domains.set(module.id, module);
-  }
-
-  async loadDefinition(definitionId: string): Promise<WorkDefinition> {
-    return loadWorkDefinition(this.options.definitions, definitionId);
+  async loadDefinition(moduleId: string, workTypeId: string): Promise<WorkDefinition> {
+    const resolved = this.options.modules.resolve({ moduleId, workTypeId });
+    return loadWorkDefinition(this.options.modules.source, { moduleId, workTypeId, packagePath: resolved.packagePath });
   }
 
   listWorks(): readonly Work[] { return [...this.#works.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }
@@ -73,23 +58,18 @@ export class AiricRuntime {
   subscribe(listener: (event: TraceEvent) => void): () => void { this.#listeners.add(listener); return () => this.#listeners.delete(listener); }
 
   async createWork(input: CreateWorkInput): Promise<Work> {
-    const definition = await this.loadDefinition(input.definitionId);
-    const domains = input.domainIds.map((id) => {
-      const module = this.#domains.get(id);
-      if (!module) throw new Error(`Unknown domain ${id}`);
-      return module;
-    });
-    for (const requirement of definition.manifest.compatibleDomains) {
-      const domain = domains.find((candidate) => candidate.id === requirement.id);
-      if (!domain) throw new Error(`Definition requires domain ${requirement.id}`);
-      if (requirement.release && !releaseMatches(domain.release, requirement.release)) throw new Error(`Domain ${domain.id}@${domain.release} is incompatible with ${requirement.release}`);
-    }
+    const resolved = this.options.modules.resolve({ moduleId: input.moduleId, workTypeId: input.workTypeId });
+    const definition = await this.loadDefinition(input.moduleId, input.workTypeId);
+    const domains = resolved.domains;
+    const availableCapabilities = new Set(domains.flatMap((domain) => domain.capabilities.map((capability) => capability.id)));
+    const unavailableCapabilities = definition.manifest.capabilities.allowed.filter((id) => !availableCapabilities.has(id));
+    if (unavailableCapabilities.length) throw new Error(`Definition allows unavailable capabilities: ${unavailableCapabilities.join(", ")}`);
     const work = createWork({
-      id: this.#id(), objective: input.objective, input: input.input ?? {}, definition: { id: definition.manifest.id },
+      id: this.#id(), objective: input.objective, input: input.input ?? {}, workType: resolved.ref,
       domainBindings: domains.map(bindingRef), now: this.#now().toISOString(),
     });
     await this.#persist([{ kind: "work.saved", work }]);
-    await this.#traceEvent(work.id, "work.created", "user", { objective: work.objective, definition: work.definition, domainBindings: work.domainBindings });
+    await this.#traceEvent(work.id, "work.created", "user", { objective: work.objective, workType: work.workType, domainBindings: work.domainBindings });
     return work;
   }
 
@@ -111,7 +91,7 @@ export class AiricRuntime {
     this.#controllers.set(workId, controller);
     try {
       const result = await this.options.harness.run({
-        workId, message, envelope, tools: gatedTools, signal: controller.signal,
+        workId, workInput: work.input, message, envelope, tools: gatedTools, signal: controller.signal,
         refreshContext: async () => {
           contextSequence += 1;
           const refreshedWork = this.#requireWork(workId);
@@ -164,15 +144,19 @@ export class AiricRuntime {
   async completeWork(workId: string, result: unknown): Promise<Work> {
     const work = this.#requireOpenWork(workId);
     const definition = await this.#definitionFor(work);
-    const toolResults = new Set(this.getTrace(workId).filter((event) => event.type === "tool.result").map((event) => String((event.payload as { capabilityId?: string }).capabilityId)));
+    const trace = [...this.getTrace(workId)];
+    const contextIndex = trace.findLastIndex((event) => event.type === "context.assembled" && (event.payload as { workType?: { operatingDigest?: string } }).workType?.operatingDigest === definition.digest);
+    const currentEvidence = contextIndex < 0 ? [] : trace.slice(contextIndex + 1);
+    const toolResults = new Set(currentEvidence.filter((event) => event.type === "tool.result").map((event) => String((event.payload as { capabilityId?: string }).capabilityId)));
     const committedCommands = new Set([...this.#actions.values()].filter((action) => action.workId === workId && action.status === "committed").map((action) => action.capabilityId));
-    const capabilities = this.#domainsFor(work).flatMap((domain) => domain.capabilities);
+    const allowed = new Set(definition.manifest.capabilities.allowed);
+    const capabilities = this.#domainsFor(work).flatMap((domain) => domain.capabilities).filter((capability) => allowed.has(capability.id));
     const missing = definition.manifest.completion.requiredCapabilities.filter((id) => {
       const capability = capabilities.find((candidate) => candidate.id === id);
       return capability?.kind === "command" ? !committedCommands.has(id) : !toolResults.has(id);
     });
     if (missing.length) throw new Error(`Work cannot complete before capabilities: ${missing.join(", ")}`);
-    const successfulHarnessTools = new Set(this.getTrace(workId)
+    const successfulHarnessEvents = currentEvidence
       .filter((event) => event.type === "tool.execution")
       .filter((event) => {
         const payload = event.payload as { phase?: string; isError?: boolean; name?: string; result?: { changes?: unknown[]; check?: { status?: string } } };
@@ -180,10 +164,17 @@ export class AiricRuntime {
         if (payload.name === "workspace_changes") return Array.isArray(payload.result?.changes) && payload.result.changes.length > 0;
         if (payload.name?.startsWith("workspace_check_")) return payload.result?.check?.status === "passed";
         return true;
-      })
-      .map((event) => String((event.payload as { name?: string }).name)));
+      });
+    const successfulHarnessTools = new Set(successfulHarnessEvents.map((event) => String((event.payload as { name?: string }).name)));
     const missingTools = definition.manifest.completion.requiredTools.filter((name) => !successfulHarnessTools.has(name));
     if (missingTools.length) throw new Error(`Work cannot complete before tools: ${missingTools.join(", ")}`);
+    const workspaceEvidence = successfulHarnessEvents
+      .filter((event) => String((event.payload as { name?: string }).name).startsWith("workspace_"))
+      .map((event) => (event.payload as { result?: { changeSetDigest?: string } }).result?.changeSetDigest)
+      .filter((value): value is string => Boolean(value));
+    if (definition.manifest.completion.requiredTools.some((name) => name.startsWith("workspace_")) && (workspaceEvidence.length === 0 || new Set(workspaceEvidence).size !== 1)) {
+      throw new Error("Work cannot complete with stale workspace validation evidence");
+    }
     const completed = reviseWork(work, { status: "completed", result }, this.#now().toISOString());
     await this.#persist([{ kind: "work.saved", work: completed }]);
     await this.#traceEvent(workId, "work.completed", "agent", { result });
@@ -213,6 +204,7 @@ export class AiricRuntime {
     const candidate = this.getTrace(workId).find((event) => event.type === "reflection.candidate" && (event.payload as { object?: { digest?: string } }).object?.digest === outcome.candidateDigest);
     if (!candidate) throw new Error("Reflection outcome must reference a candidate from the same Work");
     if (outcome.decision === "adopted" && !outcome.appliedRef) throw new Error("An adopted candidate requires the applied Git commit or domain release");
+    if (outcome.decision === "adopted" && (candidate.payload as { targetKind?: string }).targetKind !== "operating-model") throw new Error("Domain and Experience suggestions must be handed to Module Smith");
     await this.#traceEvent(workId, `reflection.${outcome.decision}`, outcome.reviewer, outcome);
   }
 
@@ -227,9 +219,11 @@ export class AiricRuntime {
     const action = this.#actions.get(actionId);
     if (!action) throw new Error(`Unknown Action ${actionId}`);
     if (!["prepared", "pending", "unknown"].includes(action.status)) return action;
-    const module = this.#domains.get(action.domainId);
+    const module = this.options.modules.domainById(action.domainId);
     if (!module?.inspectCommand) return action;
-    const inspection = await module.inspectCommand(this.#callContext(this.#requireWork(action.workId), module, actor, action), action.commandId);
+    const work = this.#requireWork(action.workId);
+    const definition = await this.#definitionFor(work);
+    const inspection = await module.inspectCommand(this.#callContext(work, module, definition, actor, action), action.commandId);
     if (!inspection) return action;
     const status = inspection.status === "committed" ? "committed" : inspection.status === "rejected" ? "rejected" : "pending";
     const settled = settleAction(action, status, this.#now().toISOString(), inspection.status === "rejected" ? { ...(inspection.error ? { error: inspection.error } : {}) } : { receipt: inspection });
@@ -237,8 +231,9 @@ export class AiricRuntime {
     return settled;
   }
 
-  #toolsFor(work: Work, definition: WorkDefinition, domains: readonly DomainModule[], actor: TrustedCallContext["actor"]): HarnessTool[] {
-    const capabilityTools = domains.flatMap((module) => module.capabilities.map((capability): HarnessTool => ({
+  #toolsFor(work: Work, definition: WorkDefinition, domains: readonly DomainProvider[], actor: TrustedCallContext["actor"]): HarnessTool[] {
+    const allowed = new Set(definition.manifest.capabilities.allowed);
+    const capabilityTools = domains.flatMap((module) => module.capabilities.filter((capability) => allowed.has(capability.id)).map((capability): HarnessTool => ({
       name: toolName(capability.id), description: capability.description, inputSchema: capability.inputSchema,
       invoke: async (input, requestId) => this.#invokeCapability(work.id, module, capability.id, input, requestId, actor),
     })));
@@ -246,21 +241,23 @@ export class AiricRuntime {
       ...capabilityTools,
       { name: "airic_read_work_document", description: "Load an on-demand Work Definition document for the next reasoning step.", inputSchema: { type: "object", properties: { id: { type: "string" }, reason: { type: "string" } }, required: ["id", "reason"] }, invoke: async (value) => { const input = value as { id: string; reason: string }; const revised = await this.selectContent(work.id, input.id, input.reason); const current = await this.#definitionFor(revised); const doc = current.documents.get(input.id); if (!doc) throw new Error(`Work Definition document ${input.id} changed before it could be read`); return { id: doc.id, content: doc.content, digest: doc.digest, workRevision: revised.revision }; } },
       { name: "airic_read_domain_source", description: "Read reviewed domain source tied to the active release.", inputSchema: { type: "object", properties: { domainId: { type: "string" }, path: { type: "string" }, symbol: { type: "string" }, reason: { type: "string" } }, required: ["domainId", "path", "reason"] }, invoke: async (value) => { const input = value as { domainId: string; path: string; symbol?: string; reason: string }; const module = domains.find((candidate) => candidate.id === input.domainId); if (!module?.readSource) throw new Error(`Domain source is unavailable for ${input.domainId}`); const result = await module.readSource({ path: input.path, ...(input.symbol ? { symbol: input.symbol } : {}) }); await this.#traceEvent(work.id, "context.retrieved", "agent", { source: "domain", domainId: module.id, release: module.release, locator: result.locator, digest: hash(result.content), reason: input.reason }); return result; } },
-      { name: "airic_read_work_trace", description: "Read canonical trace for this Work, or the source Work named by a Reflection Work.", inputSchema: { type: "object", properties: { workId: { type: "string" }, reason: { type: "string" } }, required: ["reason"] }, invoke: async (value) => { const input = value as { workId?: string; reason: string }; const sourceWorkId = work.definition.id === "reflection" ? String(input.workId ?? (work.input as { sourceWorkId?: string }).sourceWorkId ?? work.id) : work.id; const events = this.getTrace(sourceWorkId); if (!events.length) throw new Error(`No readable trace for Work ${sourceWorkId}`); await this.#traceEvent(work.id, "context.retrieved", "agent", { source: "trace", sourceWorkId, eventCount: events.length, reason: input.reason }); return events; } },
-      { name: "airic_record_reflection_candidate", description: "Store a reviewable candidate diff linked to trace evidence.", inputSchema: { type: "object", properties: { targetKind: { enum: ["operating-model", "domain", "associated"] }, targetPath: { type: "string" }, baseCommit: { type: "string" }, baseContentDigest: { type: "string" }, diff: { type: "string" }, rationale: { type: "string" }, evidenceEventIds: { type: "array", items: { type: "string" } } }, required: ["targetKind", "targetPath", "baseContentDigest", "diff", "rationale", "evidenceEventIds"] }, invoke: async (value) => { if (work.definition.id !== "reflection") throw new Error("Reflection candidates can only be produced by a Reflection Work"); return this.recordReflectionCandidate(work.id, value as Parameters<AiricRuntime["recordReflectionCandidate"]>[1]); } },
+      { name: "airic_read_work_trace", description: "Read canonical trace for this Work, or the source Work named by a Reflection Work.", inputSchema: { type: "object", properties: { workId: { type: "string" }, reason: { type: "string" } }, required: ["reason"] }, invoke: async (value) => { const input = value as { workId?: string; reason: string }; const sourceWorkId = work.workType.workTypeId === "reflection" ? String(input.workId ?? (work.input as { sourceWorkId?: string }).sourceWorkId ?? work.id) : work.id; const events = this.getTrace(sourceWorkId); if (!events.length) throw new Error(`No readable trace for Work ${sourceWorkId}`); await this.#traceEvent(work.id, "context.retrieved", "agent", { source: "trace", sourceWorkId, eventCount: events.length, reason: input.reason }); return events; } },
+      { name: "airic_record_reflection_candidate", description: "Store a reviewable candidate diff linked to trace evidence.", inputSchema: { type: "object", properties: { targetKind: { enum: ["operating-model", "domain", "associated"] }, targetPath: { type: "string" }, baseCommit: { type: "string" }, baseContentDigest: { type: "string" }, diff: { type: "string" }, rationale: { type: "string" }, evidenceEventIds: { type: "array", items: { type: "string" } } }, required: ["targetKind", "targetPath", "baseContentDigest", "diff", "rationale", "evidenceEventIds"] }, invoke: async (value) => { if (work.workType.workTypeId !== "reflection") throw new Error("Reflection candidates can only be produced by a Reflection Work"); return this.recordReflectionCandidate(work.id, value as Parameters<AiricRuntime["recordReflectionCandidate"]>[1]); } },
       { name: "airic_complete_work", description: "Complete the Work with a structured result after required domain effects are confirmed.", inputSchema: { type: "object", properties: { result: {} }, required: ["result"] }, invoke: async (value) => this.completeWork(work.id, (value as { result: unknown }).result) },
     ];
   }
 
-  async #invokeCapability(workId: string, module: DomainModule, capabilityId: string, input: unknown, requestId: string, actor: TrustedCallContext["actor"]): Promise<unknown> {
+  async #invokeCapability(workId: string, module: DomainProvider, capabilityId: string, input: unknown, requestId: string, actor: TrustedCallContext["actor"]): Promise<unknown> {
     const work = this.#requireOpenWork(workId);
     const binding = work.domainBindings.find((candidate) => candidate.id === module.id);
-    if (!binding || binding.release !== module.release || binding.buildId !== module.buildId) throw new Error(`BindingChanged: ${module.id}`);
+    if (!binding || binding.release !== module.release || binding.buildId !== module.buildId || binding.sourceDigest !== module.sourceBundle.digest) throw new Error(`BindingChanged: ${module.id}`);
     const capability = module.capabilities.find((candidate) => candidate.id === capabilityId);
     if (!capability) throw new Error(`Unknown capability ${capabilityId}`);
+    const definition = await this.#definitionFor(work);
+    if (!definition.manifest.capabilities.allowed.includes(capabilityId)) throw new Error(`CapabilityRevoked: ${capabilityId}`);
     await this.#traceEvent(workId, "tool.called", "agent", { capabilityId, kind: capability.kind, requestId, input });
     if (capability.kind !== "command") {
-      const result = await capability.invoke(this.#callContext(work, module, actor), input);
+      const result = await capability.invoke(this.#callContext(work, module, definition, actor), input);
       await this.#traceEvent(workId, "tool.result", "domain", { capabilityId, requestId, result });
       return result;
     }
@@ -278,7 +275,7 @@ export class AiricRuntime {
     const action = prepareAction({ id: actionId, workId, requestId, commandId, domainId: module.id, domainRelease: module.release, capabilityId, payloadDigest, now: this.#now().toISOString() });
     await this.#saveAction(action, "action.prepared", { input });
     try {
-      const raw = await capability.invoke(this.#callContext(work, module, actor, action), input);
+      const raw = await capability.invoke(this.#callContext(work, module, definition, actor, action), input);
       const receipt = raw as CommandReceipt;
       if (!receipt || receipt.commandId !== commandId || !["committed", "pending", "rejected"].includes(receipt.status)) throw new DomainInvocationError("Domain returned an invalid command receipt", "unknown", "InvalidReceipt", raw);
       const status = receipt.status === "committed" ? "committed" : receipt.status === "rejected" ? "rejected" : "pending";
@@ -298,16 +295,18 @@ export class AiricRuntime {
     }
   }
 
-  #callContext(work: Work, module: DomainModule, actor: TrustedCallContext["actor"], action?: Action): TrustedCallContext {
-    return { actor, workId: work.id, expectedDomainRelease: module.release, ...(action ? { actionId: action.id, commandId: action.commandId } : {}) };
+  #callContext(work: Work, module: DomainProvider, definition: WorkDefinition, actor: TrustedCallContext["actor"], action?: Action): TrustedCallContext {
+    return { actor, workId: work.id, workType: { ...work.workType, operatingDigest: definition.digest }, expectedDomainRelease: module.release, ...(action ? { actionId: action.id, commandId: action.commandId } : {}) };
   }
-  #domainsFor(work: Work): DomainModule[] { return work.domainBindings.map((binding) => { const module = this.#domains.get(binding.id); if (!module) throw new Error(`Domain ${binding.id} is not registered`); return module; }); }
-  async #definitionFor(work: Work): Promise<WorkDefinition> { return loadWorkDefinition(this.options.definitions, work.definition.id); }
-  async #assembleAndTrace(work: Work, domains: readonly DomainModule[], sequence: number, reason?: string): Promise<{ definition: WorkDefinition; envelope: ReturnType<typeof assembleContext> }> {
+  #domainsFor(work: Work): DomainProvider[] { const resolved = this.options.modules.resolve(work.workType).domains; return work.domainBindings.map((binding) => resolved.find((module) => module.id === binding.id) ?? fail(`Domain ${binding.id} is not available to ${work.workType.moduleId}/${work.workType.workTypeId}`)); }
+  async #definitionFor(work: Work): Promise<WorkDefinition> { const resolved = this.options.modules.resolve(work.workType); return loadWorkDefinition(this.options.modules.source, { ...work.workType, packagePath: resolved.packagePath }); }
+  async #assembleAndTrace(work: Work, domains: readonly DomainProvider[], sequence: number, reason?: string): Promise<{ definition: WorkDefinition; envelope: ReturnType<typeof assembleContext> }> {
     const definition = await this.#definitionFor(work);
-    const envelope = assembleContext({ work, definition, domains, sequence });
+    const allowed = new Set(definition.manifest.capabilities.allowed);
+    const authorizedDomains = domains.map((domain) => ({ ...domain, capabilities: domain.capabilities.filter((capability) => allowed.has(capability.id)) }));
+    const envelope = assembleContext({ work, definition, domains: authorizedDomains, sequence });
     const previous = this.getTrace(work.id).filter((event) => event.type === "context.assembled").at(-1);
-    const previousDigest = (previous?.payload as { definition?: { digest?: string } } | undefined)?.definition?.digest;
+    const previousDigest = (previous?.payload as { workType?: { operatingDigest?: string } } | undefined)?.workType?.operatingDigest;
     if (previousDigest && previousDigest !== definition.digest) {
       await this.#traceEvent(work.id, "context.operating-model-changed", "runtime", { fromDigest: previousDigest, toDigest: definition.digest, ...definition.source });
     }
@@ -317,7 +316,7 @@ export class AiricRuntime {
       evidence.push({ id: block.id, digest: block.digest, object });
     }
     await this.#traceEvent(work.id, "context.assembled", "runtime", {
-      envelopeId: envelope.envelopeId, digest: envelope.digest, definition: envelope.workDefinition,
+      envelopeId: envelope.envelopeId, digest: envelope.digest, workType: envelope.workType,
       sources: envelope.provenance, availableCapabilities: envelope.availableCapabilities, evidence, ...(reason ? { reason } : {}),
     });
     return { definition, envelope };
@@ -340,4 +339,3 @@ export class AiricRuntime {
 export function toolName(capabilityId: string): string { return `domain_${capabilityId.replace(/[^a-zA-Z0-9_-]/g, "_")}`; }
 function asObject(value: unknown): Record<string, unknown> { return value && typeof value === "object" ? value as Record<string, unknown> : { value }; }
 function fail(message: string): never { throw new Error(message); }
-function releaseMatches(actual: string, requirement: string): boolean { return requirement.endsWith(".*") ? actual.startsWith(requirement.slice(0, -1)) : actual === requirement; }

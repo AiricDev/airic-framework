@@ -1,6 +1,7 @@
 import type { Action } from "../domain/action.js";
 import type { Work } from "../domain/work.js";
 import type { ContextEnvelope } from "./context.js";
+import type { WorkTypeRef } from "../domain/work.js";
 
 export interface TraceEvent {
   schemaVersion: 1;
@@ -51,9 +52,10 @@ export interface DeliveryRecord {
 }
 
 export interface AgentHarness {
-  capabilities(): { resume: boolean; interrupt: boolean; contextHook: boolean; compactionTrace: boolean; workspaceDefinitions?: readonly string[] };
+  capabilities(): { resume: boolean; interrupt: boolean; contextHook: boolean; compactionTrace: boolean; workspaceWorkTypes?: readonly string[] };
   run(input: {
     workId: string;
+    workInput: unknown;
     message: string;
     envelope: ContextEnvelope;
     tools: readonly HarnessTool[];
@@ -65,9 +67,11 @@ export interface AgentHarness {
   interrupt?(workId: string): Promise<void>;
 }
 
-export interface DefinitionSource {
-  readManifest(definitionId: string): Promise<unknown>;
-  readDocument(definitionId: string, path: string): Promise<string>;
-  listDefinitionFiles(definitionId: string): Promise<readonly string[]>;
+export interface WorkTypeSource {
+  listModules(): Promise<readonly string[]>;
+  readModuleManifest(moduleId: string): Promise<unknown>;
+  readManifest(ref: WorkTypeRef & { packagePath: string }): Promise<unknown>;
+  readDocument(ref: WorkTypeRef & { packagePath: string }, path: string): Promise<string>;
+  listWorkTypeFiles(ref: WorkTypeRef & { packagePath: string }): Promise<readonly string[]>;
   status?(): Promise<{ gitHead?: string; dirty: boolean }>;
 }

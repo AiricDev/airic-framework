@@ -21,13 +21,13 @@ function render(element: ReactElement): HTMLElement {
 
 describe("AiricWorkbench live projection", () => {
   it("refreshes the selected Work trace when an external SSE event arrives", async () => {
-    const work: WorkDto = { id: "work-1", objective: "External work", input: {}, status: "open", definition: { id: "assist" }, domainBindings: [], selectedContent: [], revision: 1, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" };
+    const work: WorkDto = { id: "work-1", objective: "External work", input: {}, status: "open", workType: { moduleId: "cases", workTypeId: "assist" }, domainBindings: [], selectedContent: [], revision: 1, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" };
     let trace: TraceDto[] = [];
     let listener: ((event: TraceDto) => void) | undefined;
     const client = {
       listWorks: vi.fn(async () => [work]),
       getWork: vi.fn(async () => ({ work, trace })),
-      listDefinitions: vi.fn(async () => []),
+      listWorkTypes: vi.fn(async () => []),
       getWorkspace: vi.fn(async () => ({ dirty: false, status: "", diff: "" })),
       getCapabilities: vi.fn(async () => ({ resume: false, interrupt: false, contextHook: false, compactionTrace: false })),
       subscribeTrace: vi.fn((value: (event: TraceDto) => void) => { listener = value; return () => {}; }),

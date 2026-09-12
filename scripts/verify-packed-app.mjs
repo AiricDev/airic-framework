@@ -36,9 +36,9 @@ catch (error) { if (error.code !== 1) throw error; }
 if (scaffoldIdentityWasPersisted) throw new Error("Generated app persisted the scaffold identity in Git config");
 if ((await run("git", ["status", "--porcelain"], { cwd: app })).stdout.trim()) throw new Error("Generated app working tree is not clean after creation");
 for (const path of [".env", "models.json", "models-store.json", ".airic/runtime"]) await run("git", ["check-ignore", "-q", path], { cwd: app });
-await access(resolve(app, "work-definitions/domain-model-smith/work.yml"));
-await access(resolve(app, "work-definitions/operating-model-smith/work.yml"));
-await access(resolve(app, "work-definitions/experience-smith/work.yml"));
+await access(resolve(app, "src/modules/development/operating/module-smith/work.yml"));
+await access(resolve(app, "src/modules/development/operating/reflection/work.yml"));
+await access(resolve(app, "src/modules/cases/operating/case-assistance/work.yml"));
 await access(resolve(app, "e2e/cases.spec.ts"));
 const localPackages = {
   framework: "@airic/framework",
@@ -48,7 +48,7 @@ const localPackages = {
   ui: "@airic/ui",
   client: "@airic/client",
 };
-// The generated app declares `@airic/*` as bare `"0.1.0"` specs, which are not published to any registry. Rewrite them to absolute `file:` tarball paths and pin each package via `pnpm.overrides` so the packages' own bare `0.1.0` inter-dependencies (e.g. `@airic/harness-pi` -> `@airic/framework`) also resolve to the local tarballs instead of a registry. The clean-tree assertion above has already run, so mutating this throwaway scratch app's package.json is fine.
+// Rewrite unpublished `@airic/*` specs to local tarballs in this throwaway acceptance app.
 const appPackageJsonPath = resolve(app, "package.json");
 const appPackageJson = JSON.parse(await readFile(appPackageJsonPath, "utf8"));
 const overrides = {};

@@ -1,0 +1,26 @@
+schemaVersion: 1
+id: module-smith
+title: Module Smith
+description: Develop one coherent vertical slice across Domain, use cases, Operating Model, Experience, adapters, and tests.
+capabilities:
+  allowed: []
+documents:
+  - id: process
+    path: process.md
+    title: Module development process
+    role: process
+    load: required
+    requires: [boundaries]
+  - id: boundaries
+    path: boundaries.md
+    title: Module ownership and authority
+    role: policy
+    load: required
+  - id: architecture
+    path: architecture.md
+    title: Vertical-slice architecture guide
+    role: reference
+    load: on-demand
+completion:
+  requiredCapabilities: []
+  requiredTools: [workspace_check_module_architecture, workspace_check_module_types, workspace_check_module_tests, workspace_changes]

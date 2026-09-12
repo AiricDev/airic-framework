@@ -7,8 +7,8 @@ import type { AiricRuntime, TraceEvent, TrustedCallContext } from "@airic/framew
 export interface AiricHttpHandlerOptions {
   runtime: AiricRuntime;
   basePath?: string;
-  definitions?: () => Promise<readonly { id: string; title: string; digest: string }[]>;
-  getDefinition?: (id: string) => Promise<{ digest: string; files: Readonly<Record<string, string>> }>;
+  workTypes?: () => Promise<readonly { moduleId: string; workTypeId: string; title: string; digest: string }[]>;
+  getWorkType?: (moduleId: string, workTypeId: string) => Promise<{ digest: string; files: Readonly<Record<string, string>> }>;
   workspaceStatus?: () => Promise<{ gitHead?: string; dirty: boolean; status: string; diff: string }>;
   saveUpload?: (input: { name: string; mediaType: string; contentBase64: string }) => Promise<{ ref: unknown }>;
   authenticate?: (request: IncomingMessage) => Promise<TrustedCallContext["actor"]>;
@@ -66,9 +66,9 @@ export function createAiricHttpHandler(options: AiricHttpHandlerOptions): AiricH
         if (path === "/works" && request.method === "POST") return json(response, 201, await options.runtime.createWork(await bodyJson(request) as never));
         if (path === "/capabilities" && request.method === "GET") return json(response, 200, options.runtime.options.harness.capabilities());
         if (path === "/workspace" && request.method === "GET") return options.workspaceStatus ? json(response, 200, await options.workspaceStatus()) : json(response, 501, { error: "Workspace status is not configured", code: "NotConfigured" });
-        if (path === "/definitions" && request.method === "GET") return json(response, 200, await options.definitions?.() ?? []);
-        const definitionMatch = path.match(/^\/definitions\/([^/]+)$/u);
-        if (definitionMatch && request.method === "GET") return options.getDefinition ? json(response, 200, await options.getDefinition(decodeURIComponent(definitionMatch[1]!))) : json(response, 501, { error: "Definition reading is not configured", code: "NotConfigured" });
+        if (path === "/work-types" && request.method === "GET") return json(response, 200, await options.workTypes?.() ?? []);
+        const workTypeMatch = path.match(/^\/work-types\/([^/]+)\/([^/]+)$/u);
+        if (workTypeMatch && request.method === "GET") return options.getWorkType ? json(response, 200, await options.getWorkType(decodeURIComponent(workTypeMatch[1]!), decodeURIComponent(workTypeMatch[2]!))) : json(response, 501, { error: "WorkType reading is not configured", code: "NotConfigured" });
         if (path === "/uploads" && request.method === "POST") return options.saveUpload ? json(response, 201, await options.saveUpload(await bodyJson(request) as never)) : json(response, 501, { error: "Uploads are not configured", code: "NotConfigured" });
         const match = path.match(/^\/works\/([^/]+)(?:\/(trace|messages|complete|interrupt|reflection|reflection-outcome|uploads))?$/u);
         if (match) {

@@ -13,14 +13,14 @@ async function fixture() {
   const policy = {
     root,
     grants: [{
-      definitionId: "domain-model-smith",
+      moduleId: "development", workTypeId: "module-smith",
       read: ["src/domain", "test/domain"],
       write: ["src/domain", "test/domain"],
       denyWrite: ["src/domain/protected"],
       checks: [{ id: "safe_env", title: "safe environment", command: process.execPath, args: ["-e", "process.stdout.write(String(process.env.AIRIC_API_KEY))"], requiredChangeRoots: ["test/domain"] }],
     }],
   } as const;
-  const tools = await createWorkspaceTools({ policy, definitionId: "domain-model-smith", stateDirectory: join(root, ".airic-state") });
+  const tools = await createWorkspaceTools({ policy, moduleId: "development", workTypeId: "module-smith", stateDirectory: join(root, ".airic-state") });
   const call = async (name: string, value: unknown = {}) => {
     const tool = tools.find((candidate) => candidate.name === name); if (!tool) throw new Error(`Missing ${name}`);
     return tool.execute("call", value, undefined as never, undefined as never, undefined as never) as Promise<{ content: { text: string }[] }>;
@@ -31,7 +31,7 @@ async function fixture() {
 describe("Pi workspace tools", () => {
   it("grants tools only to configured Work Definitions", async () => {
     const { root } = await fixture();
-    expect(await createWorkspaceTools({ policy: { root, grants: [] }, definitionId: "case-assistance", stateDirectory: join(root, "none") })).toEqual([]);
+    expect(await createWorkspaceTools({ policy: { root, grants: [] }, moduleId: "cases", workTypeId: "case-assistance", stateDirectory: join(root, "none") })).toEqual([]);
   });
 
   it("confines reads and writes, rejects secrets and detects concurrent changes", async () => {
@@ -77,4 +77,13 @@ describe("Pi workspace tools", () => {
     await writeFile(join(root, "src", "domain", "external.ts"), "external\n");
     await expect(call("workspace_changes")).rejects.toThrow("WorkspaceChangeRequired");
   });
+});
+
+it("limits a targeted workspace grant to the Work input directory", async () => {
+  const root = await mkdtemp(join(tmpdir(), "airic-workspace-target-"));
+  const policy = { root, grants: [{ moduleId: "development", workTypeId: "module-smith", read: ["work-definitions"], write: ["work-definitions"], target: { root: "work-definitions", inputKey: "targetId" } }] };
+  const tools = await createWorkspaceTools({ policy, moduleId: "development", workTypeId: "module-smith", workInput: { targetId: "new-report" }, stateDirectory: join(root, ".state") });
+  const write = tools.find((tool) => tool.name === "workspace_write")!;
+  await write.execute("write-1", { path: "work-definitions/new-report/process.md", content: "ok" }, undefined as never, undefined as never);
+  await expect(write.execute("write-2", { path: "work-definitions/other/process.md", content: "no" }, undefined as never, undefined as never)).rejects.toThrow("not granted");
 });

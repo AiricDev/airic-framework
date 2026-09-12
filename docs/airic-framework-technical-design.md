@@ -1,6 +1,8 @@
-# Airic Framework 独立项目技术设计
+# Airic Framework pre-0.2 技术设计（历史）
 
-版本：0.4 · 日期：2026-09-10 · 状态：Git 工作树 Operating Model 实现基线（实施进度见 `development-plan.md`）
+版本：历史草案 · 日期：2026-09-10 · 状态：已由 0.2 Module 架构取代
+
+> 本文保留用于解释 0.2 之前的设计演进，其中的全局 `work-definitions/`、`DomainModule` 和调用方指定 Domain 等接口不再有效。当前规范以 [`application-integration.md`](./application-integration.md)、仓库根目录 [`architecture-map.md`](../architecture-map.md) 及默认脚手架为准。
 
 本文描述 Airic Framework 当前实现基线的职责、公共协议、运行机制、项目结构和演进方式。验证状态以 `development-plan.md` 与仓库测试为准；本文不包含某个行业应用的领域设计。
 

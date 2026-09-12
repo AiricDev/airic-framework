@@ -1,0 +1,22 @@
+schemaVersion: 1
+id: cases
+title: Cases
+description: Complete example vertical slice.
+imports:
+  domains: []
+domain:
+  release: 1.0.0
+  exports:
+    capabilities: [case.get, case.update]
+    schemas:
+      - id: cases.record
+        path: public/case-contract.ts
+    references:
+      - id: cases.architecture
+        path: architecture.md
+workTypes:
+  - id: case-assistance
+    path: operating/case-assistance
+contributions:
+  server: server.ts
+  browser: experience/browser.tsx

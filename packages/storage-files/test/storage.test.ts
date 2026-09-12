@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DirectoryDefinitionSource, FileRuntimeStore } from "@airic/storage-files";
+import { DirectoryModuleSource, FileRuntimeStore } from "@airic/storage-files";
 import { loadWorkDefinition } from "@airic/framework";
 import type { RuntimeEvent } from "@airic/framework";
 
@@ -49,15 +49,17 @@ describe("FileRuntimeStore", () => {
     await recovered.close();
   });
 
-  it("reads Work Definitions directly from the current project directory", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "airic-definitions-"));
-    const root = join(directory, "work-definitions", "assist"); await mkdir(root, { recursive: true });
-    await writeFile(join(root, "work.yml"), "schemaVersion: 1\nid: assist\ntitle: Assist\ndocuments:\n  - id: process\n    path: process.md\n    title: Process\n    role: process\n    load: required\ncompletion:\n  requiredCapabilities: []\n");
+  it("reads module-owned WorkTypes directly from the current project directory", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "airic-modules-"));
+    const moduleRoot = join(directory, "modules", "example"); const root = join(moduleRoot, "operating", "assist"); await mkdir(root, { recursive: true });
+    await writeFile(join(moduleRoot, "module.yml"), "schemaVersion: 1\nid: example\ntitle: Example\nworkTypes:\n  - id: assist\n    path: operating/assist\n");
+    await writeFile(join(root, "work.yml"), "schemaVersion: 1\nid: assist\ntitle: Assist\ncapabilities:\n  allowed: []\ndocuments:\n  - id: process\n    path: process.md\n    title: Process\n    role: process\n    load: required\ncompletion:\n  requiredCapabilities: []\n");
     await writeFile(join(root, "process.md"), "First content");
-    const definitions = new DirectoryDefinitionSource(join(directory, "work-definitions"), { gitRoot: directory });
-    const first = await loadWorkDefinition(definitions, "assist");
+    const definitions = new DirectoryModuleSource(join(directory, "modules"), { gitRoot: directory });
+    const ref = { moduleId: "example", workTypeId: "assist", packagePath: "operating/assist" };
+    const first = await loadWorkDefinition(definitions, ref);
     await writeFile(join(root, "process.md"), "Second content");
-    const second = await loadWorkDefinition(definitions, "assist");
+    const second = await loadWorkDefinition(definitions, ref);
     expect(second.digest).not.toBe(first.digest);
     expect(second.required[0]?.content).toBe("Second content");
   });

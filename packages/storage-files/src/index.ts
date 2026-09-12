@@ -3,10 +3,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { cp, lstat, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, normalize, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { loadWorkDefinition, type DefinitionSource, type RuntimeEvent, type RuntimeStore } from "@airic/framework";
+import { loadWorkDefinition, type RuntimeEvent, type RuntimeStore, type WorkTypeRef, type WorkTypeSource } from "@airic/framework";
 
 interface CommitBody {
-  format: "airic-journal-v1";
+  format: "airic-journal-v2";
   sequence: number;
   previousHash: string | null;
   timestamp: string;
@@ -68,7 +68,7 @@ export class FileRuntimeStore implements RuntimeStore {
     if (!events.length) return;
     if (!this.#lock) throw new Error("FileRuntimeStore is not open");
     const operation = this.#writes.then(async () => {
-      const body: CommitBody = { format: "airic-journal-v1", sequence: this.#sequence + 1, previousHash: this.#previousHash, timestamp: this.#now().toISOString(), events };
+      const body: CommitBody = { format: "airic-journal-v2", sequence: this.#sequence + 1, previousHash: this.#previousHash, timestamp: this.#now().toISOString(), events };
       const hash = digest(stable(body));
       const commit: CommitFile = { ...body, hash };
       const finalPath = join(this.#journalDir(), `${String(body.sequence).padStart(12, "0")}-${hash}.json`);
@@ -118,7 +118,7 @@ export class FileRuntimeStore implements RuntimeStore {
   async rebuildSnapshot<T>(seed: T, project: (state: T, event: RuntimeEvent) => T): Promise<{ sequence: number; hash: string; state: T }> {
     let state = seed;
     for await (const event of this.replay()) state = project(state, event);
-    const body = { format: "airic-snapshot-v1" as const, sequence: this.#sequence, journalHash: this.#previousHash, state };
+    const body = { format: "airic-snapshot-v2" as const, sequence: this.#sequence, journalHash: this.#previousHash, state };
     const hash = digest(stable(body));
     const directory = join(this.#directory, "snapshots"); await mkdir(directory, { recursive: true });
     await writeAtomic(join(directory, `${String(this.#sequence).padStart(12, "0")}-${hash}.json`), `${JSON.stringify({ ...body, hash })}\n`);
@@ -131,7 +131,7 @@ export class FileRuntimeStore implements RuntimeStore {
     if (!name) return undefined;
     const snapshot = JSON.parse(await readFile(join(directory, name), "utf8")) as { format: string; sequence: number; journalHash: string | null; state: T; hash: string };
     const { hash, ...body } = snapshot;
-    if (snapshot.format !== "airic-snapshot-v1" || digest(stable(body)) !== hash || !name.endsWith(`${hash}.json`)) throw new Error(`Snapshot hash mismatch: ${name}`);
+    if (snapshot.format !== "airic-snapshot-v2" || digest(stable(body)) !== hash || !name.endsWith(`${hash}.json`)) throw new Error(`Snapshot hash mismatch: ${name}`);
     let matchingJournalHash: string | null = null;
     for await (const commit of this.#commits()) { if (commit.sequence === snapshot.sequence) matchingJournalHash = commit.hash; }
     if (matchingJournalHash !== snapshot.journalHash) throw new Error(`Snapshot journal anchor mismatch: ${name}`);
@@ -170,7 +170,7 @@ export class FileRuntimeStore implements RuntimeStore {
     let previousHash: string | null = null;
     for (const name of names) {
       const commit = JSON.parse(await readFile(join(this.#journalDir(), name), "utf8")) as CommitFile;
-      if (commit.format !== "airic-journal-v1" || commit.sequence !== expectedSequence || commit.previousHash !== previousHash) throw new Error(`Broken journal chain at ${name}`);
+      if (commit.format !== "airic-journal-v2" || commit.sequence !== expectedSequence || commit.previousHash !== previousHash) throw new Error(`Incompatible or broken Airic runtime journal at ${name}; version 0.2 requires a new storage directory`);
       const { hash, ...body } = commit;
       if (hash !== digest(stable(body)) || !name.endsWith(`${hash}.json`)) throw new Error(`Journal hash mismatch at ${name}`);
       yield commit;
@@ -183,23 +183,18 @@ export class FileRuntimeStore implements RuntimeStore {
   #lockPath(): string { return join(this.#directory, "runtime.lock"); }
 }
 
-export class DirectoryDefinitionSource implements DefinitionSource {
+export class DirectoryModuleSource implements WorkTypeSource {
   readonly #root: string;
   readonly #gitRoot: string;
   constructor(root: string, options: { gitRoot?: string } = {}) { this.#root = resolve(root); this.#gitRoot = resolve(options.gitRoot ?? resolve(root, "..")); }
-  async readManifest(definitionId: string): Promise<string> { return readFile(await this.#path(definitionId, "work.yml"), "utf8"); }
-  async readDocument(definitionId: string, path: string): Promise<string> { return readFile(await this.#path(definitionId, path), "utf8"); }
-  async listDefinitionFiles(definitionId: string): Promise<readonly string[]> { return walkFiles(await this.#path(definitionId, "."), true); }
-  async list(): Promise<readonly { id: string; title: string; digest: string }[]> {
-    const result = [];
-    for (const id of await safeReadDir(this.#root)) {
-      try { const definition = await loadWorkDefinition(this, id); result.push({ id, title: definition.manifest.title, digest: definition.digest }); } catch {}
-    }
-    return result;
-  }
-  async exportFiles(id: string): Promise<{ digest: string; files: Record<string, string> }> {
-    const definition = await loadWorkDefinition(this, id); const files: Record<string, string> = {};
-    for (const path of await this.listDefinitionFiles(id)) files[path] = await this.readDocument(id, path);
+  async listModules(): Promise<readonly string[]> { return (await readdir(this.#root, { withFileTypes: true })).filter((entry) => entry.isDirectory() && /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(entry.name)).map((entry) => entry.name).sort(); }
+  async readModuleManifest(moduleId: string): Promise<string> { return readFile(await this.#modulePath(moduleId, "module.yml"), "utf8"); }
+  async readManifest(ref: WorkTypeRef & { packagePath: string }): Promise<string> { return readFile(await this.#workTypePath(ref, "work.yml"), "utf8"); }
+  async readDocument(ref: WorkTypeRef & { packagePath: string }, path: string): Promise<string> { return readFile(await this.#workTypePath(ref, path), "utf8"); }
+  async listWorkTypeFiles(ref: WorkTypeRef & { packagePath: string }): Promise<readonly string[]> { return walkFiles(await this.#workTypePath(ref, "."), true); }
+  async exportFiles(ref: WorkTypeRef & { packagePath: string }): Promise<{ digest: string; files: Record<string, string> }> {
+    const definition = await loadWorkDefinition(this, ref); const files: Record<string, string> = {};
+    for (const path of await this.listWorkTypeFiles(ref)) files[path] = await this.readDocument(ref, path);
     return { digest: definition.digest, files };
   }
   async status(): Promise<{ gitHead?: string; dirty: boolean }> {
@@ -212,11 +207,18 @@ export class DirectoryDefinitionSource implements DefinitionSource {
       return { gitHead: head.trim(), dirty: Boolean(changes.trim()) };
     } catch { return { dirty: true }; }
   }
-  async #path(definitionId: string, path: string): Promise<string> {
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(definitionId)) throw new Error("Unsafe definition id");
-    const base = resolve(this.#root, definitionId);
+  async #modulePath(moduleId: string, path: string): Promise<string> {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(moduleId)) throw new Error("Unsafe module id");
+    const base = resolve(this.#root, moduleId);
     const resolved = resolve(base, normalize(path));
     if (resolved !== base && !resolved.startsWith(`${base}${sep}`)) throw new Error("Work Definition path escapes its directory");
+    await rejectSymbolicPath(base, resolved);
+    return resolved;
+  }
+  async #workTypePath(ref: WorkTypeRef & { packagePath: string }, path: string): Promise<string> {
+    const base = await this.#modulePath(ref.moduleId, ref.packagePath);
+    const resolved = resolve(base, normalize(path));
+    if (resolved !== base && !resolved.startsWith(`${base}${sep}`)) throw new Error("WorkType path escapes its package");
     await rejectSymbolicPath(base, resolved);
     return resolved;
   }

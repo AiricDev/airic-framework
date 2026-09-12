@@ -49,7 +49,7 @@ importers:
         version: 4.1.5
     devDependencies:
       '@airic/testing':
-        specifier: 0.1.0
+        specifier: workspace:*
         version: link:../testing
       typescript:
         specifier: 5.9.2
@@ -58,7 +58,7 @@ importers:
   packages/harness-pi:
     dependencies:
       '@airic/framework':
-        specifier: 0.1.0
+        specifier: workspace:*
         version: link:../framework
       '@earendil-works/pi-ai':
         specifier: 0.80.10
@@ -77,7 +77,7 @@ importers:
   packages/server:
     dependencies:
       '@airic/framework':
-        specifier: 0.1.0
+        specifier: workspace:*
         version: link:../framework
     devDependencies:
       typescript:
@@ -87,7 +87,7 @@ importers:
   packages/storage-files:
     dependencies:
       '@airic/framework':
-        specifier: 0.1.0
+        specifier: workspace:*
         version: link:../framework
     devDependencies:
       typescript:
@@ -97,7 +97,7 @@ importers:
   packages/testing:
     dependencies:
       '@airic/framework':
-        specifier: 0.1.0
+        specifier: workspace:*
         version: link:../framework
     devDependencies:
       typescript:
@@ -107,7 +107,7 @@ importers:
   packages/ui:
     dependencies:
       '@airic/client':
-        specifier: 0.1.0
+        specifier: workspace:*
         version: link:../client
     devDependencies:
       '@types/react':
@@ -135,22 +135,22 @@ importers:
   templates/default:
     dependencies:
       '@airic/client':
-        specifier: 0.1.0
+        specifier: workspace:*
         version: link:../../packages/client
       '@airic/framework':
-        specifier: 0.1.0
+        specifier: workspace:*
         version: link:../../packages/framework
       '@airic/harness-pi':
-        specifier: 0.1.0
+        specifier: workspace:*
         version: link:../../packages/harness-pi
       '@airic/server':
-        specifier: 0.1.0
+        specifier: workspace:*
         version: link:../../packages/server
       '@airic/storage-files':
-        specifier: 0.1.0
+        specifier: workspace:*
         version: link:../../packages/storage-files
       '@airic/ui':
-        specifier: 0.1.0
+        specifier: workspace:*
         version: link:../../packages/ui
       react:
         specifier: 19.1.1
@@ -163,7 +163,7 @@ importers:
         version: 7.18.3(react-dom@19.1.1(react@19.1.1))(react@19.1.1)
     devDependencies:
       '@airic/testing':
-        specifier: 0.1.0
+        specifier: workspace:*
         version: link:../../packages/testing
       '@playwright/test':
         specifier: 1.55.0

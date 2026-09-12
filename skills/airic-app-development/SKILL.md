@@ -1,13 +1,13 @@
 ---
 name: airic-app-development
-description: Build or extend an application on Airic Framework, including clean domain modeling, DomainModule capability adapters, Markdown Work Definitions, workbench result views, file recovery contracts, reflection candidates, tests, and framework upgrades. Use when creating an Airic app or changing its domain capabilities, operating model, UI extension, or integration boundary.
+description: Build or extend an Airic 0.2 Application composed from vertical-slice Modules, including DomainProvider capabilities, module-owned WorkTypes, server/browser contributions, reflection, tests, and framework upgrades.
 ---
 
 # Airic application development
 
 First read the application's `package.json` and use the documentation shipped with that exact `@airic/framework` version. Inspect its Domain and Application layers before changing adapters or Work Definitions.
 
-Preserve the governing split: domain code specifies legal business meaning; Work Definition documents guide the Agent's flexible method; Airic links both through Work, Action, ContextEnvelope and trace. Do not add a workflow engine, session entity, approval entity, business-state table inside Airic, or direct Agent writes to application persistence.
+Preserve both locality and authority: a Module owns the Domain, use cases, Operating Model, Experience, adapters and tests that change together, while internal layer boundaries keep policy independent of mechanisms. Airic links module WorkTypes and DomainProviders through Work, Action, ContextEnvelope and trace. Do not add a workflow engine, session entity, approval entity, business-state table inside Airic, or direct Agent writes to application persistence.
 
 Choose the task and read only its reference:
 

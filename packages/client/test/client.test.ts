@@ -22,14 +22,14 @@ describe("AiricClient", () => {
   it("sends typed request DTOs with JSON bodies", async () => {
     const request = vi.fn<typeof fetch>().mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ id: "work-1" }), { status: 201 })));
     const client = createAiricClient({ fetch: request });
-    await client.createWork({ definitionId: "case-assistance", objective: "Help me", domainIds: ["case-management"] });
+    await client.createWork({ moduleId: "cases", workTypeId: "case-assistance", objective: "Help me" });
     await client.sendMessage("work-1", "hello");
     const [worksUrl, worksInit] = request.mock.calls[0]!;
     const [messagesUrl, messagesInit] = request.mock.calls[1]!;
     expect(worksUrl).toBe("/api/airic/works");
     expect(worksInit?.method).toBe("POST");
     expect(worksInit?.headers).toMatchObject({ "content-type": "application/json" });
-    expect(JSON.parse(String(worksInit?.body))).toEqual({ definitionId: "case-assistance", objective: "Help me", input: {}, domainIds: ["case-management"] });
+    expect(JSON.parse(String(worksInit?.body))).toEqual({ moduleId: "cases", workTypeId: "case-assistance", objective: "Help me", input: {} });
     expect(messagesUrl).toBe("/api/airic/works/work-1/messages");
     expect(JSON.parse(String(messagesInit?.body))).toEqual({ message: "hello" });
   });

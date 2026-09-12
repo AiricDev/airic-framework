@@ -5,9 +5,7 @@ export interface VersionedRef {
   revision: string;
 }
 
-export interface DefinitionRef {
-  id: string;
-}
+export interface WorkTypeRef { moduleId: string; workTypeId: string }
 
 export interface DomainBindingRef {
   id: string;
@@ -21,7 +19,7 @@ export interface Work {
   objective: string;
   input: unknown;
   status: WorkStatus;
-  definition: DefinitionRef;
+  workType: WorkTypeRef;
   domainBindings: readonly DomainBindingRef[];
   selectedContent: readonly string[];
   result?: unknown;
@@ -37,7 +35,7 @@ export function createWork(input: Omit<Work, "status" | "revision" | "createdAt"
     objective: input.objective,
     input: input.input,
     status: "open",
-    definition: input.definition,
+    workType: input.workType,
     domainBindings: input.domainBindings,
     selectedContent: [],
     revision: 1,

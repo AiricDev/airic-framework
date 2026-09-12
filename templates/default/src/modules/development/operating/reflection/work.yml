@@ -1,0 +1,14 @@
+schemaVersion: 1
+id: reflection
+title: Reflect on completed work
+description: Produce reviewable Operating Model candidates from trace evidence; route code changes to Module Smith.
+capabilities:
+  allowed: []
+documents:
+  - id: reflection-method
+    path: reflection.md
+    title: Evidence-based reflection
+    role: reflection
+    load: required
+completion:
+  requiredCapabilities: []
