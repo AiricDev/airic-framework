@@ -42,6 +42,7 @@ const packageJson = {
     "@airic/framework": "0.2.0",
     "@airic/harness-pi": "0.2.0",
     "@airic/server": "0.2.0",
+    "@airic/acp": "0.2.0",
     "@airic/storage-files": "0.2.0",
     "@airic/ui": "0.2.0",
     "react": "19.1.1",

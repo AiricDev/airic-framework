@@ -16,6 +16,7 @@ export interface DomainBindingRef {
 
 export interface Work {
   id: string;
+  createdBy?: string;
   objective: string;
   input: unknown;
   status: WorkStatus;
@@ -32,6 +33,7 @@ export function createWork(input: Omit<Work, "status" | "revision" | "createdAt"
   if (!input.objective.trim()) throw new Error("Work objective is required");
   return {
     id: input.id,
+    ...(input.createdBy ? { createdBy: input.createdBy } : {}),
     objective: input.objective,
     input: input.input,
     status: "open",

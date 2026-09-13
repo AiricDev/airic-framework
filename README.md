@@ -22,9 +22,10 @@ Git is required by `create-airic`. A generated project is initialized on `main` 
 - `@airic/storage-files`: immutable journal, content objects, exclusive writer, verification and backup.
 - `@airic/harness-pi`: Pi 0.80.10 adapter; Pi session/provider types remain private.
 - `@airic/server`: mountable HTTP handler with resumable SSE and a static asset handler.
+- `@airic/acp`: optional, Work-bound ACP WebSocket gateway for browser Agent panels; it projects Airic trace and never owns business state.
 - `@airic/client`: typed browser SDK over the Airic HTTP API with reconnecting trace subscription.
 - `@airic/ui`: extensible React workbench with provider and hooks.
 - `create-airic`: generator built from the canonical default template.
 - `@airic/testing`: provider-neutral fakes and fixtures.
 
-Read [the integration guide](./docs/application-integration.md), [the implementation ledger](./docs/development-plan.md), [the sanitized live-provider acceptance](./docs/live-provider-acceptance.md), and [the pre-0.2 historical design](./docs/airic-framework-technical-design.md).
+Read [the integration guide](./docs/application-integration.md), [the ACP browser contract](./docs/acp-browser-contract.md), [the implementation ledger](./docs/development-plan.md), [the sanitized live-provider acceptance](./docs/live-provider-acceptance.md), and [the pre-0.2 historical design](./docs/airic-framework-technical-design.md).

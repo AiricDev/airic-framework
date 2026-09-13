@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { AiricRuntime, DomainInvocationError, ModuleRegistry, type CommandInspection, type DomainProvider } from "@airic/framework";
 import { FakeHarness, MemoryModuleSource, MemoryRuntimeStore } from "@airic/testing";
+const creator = { id: "user", scopes: [] };
 
 const manifest = {
   schemaVersion: 1,
@@ -58,9 +59,29 @@ function fixture(commandMode: "committed" | "rejected" | "unknown" = "committed"
 }
 
 describe("AiricRuntime", () => {
+  it("persists creator identity, serializes turns and rechecks authority before tool execution", async () => {
+    const { runtime, harness } = fixture(); await runtime.open();
+    let authorized = true;
+    runtime.options.authorizeWork = async () => authorized;
+    const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Govern access" }, creator);
+    expect(work.createdBy).toBe("user");
+    let release!: () => void;
+    runtime.options.harness = { capabilities: () => harness.capabilities(), run: async (input) => {
+      await input.onDelivered({ envelopeDigest: input.envelope.digest, adapter: { id: "fake", version: "1" }, injectionPoints: [], registeredTools: input.tools.map((tool) => tool.name) });
+      await new Promise<void>((resolveWait) => { release = resolveWait; });
+      authorized = false;
+      await expect(input.tools.find((tool) => tool.name === "domain_case_update")!.invoke({}, "write")).rejects.toThrow("WorkAccessDenied");
+      return { text: "Access revoked" };
+    } };
+    const running = runtime.sendMessage(work.id, "Start", creator);
+    while (!release) await new Promise((resolveWait) => setTimeout(resolveWait, 0));
+    await expect(runtime.sendMessage(work.id, "Concurrent", creator)).rejects.toThrow("WorkBusy");
+    release(); await running;
+    expect(runtime.getTrace(work.id).filter((event) => event.type === "message.user")).toHaveLength(1);
+  });
   it("delivers current operating-model context and commits through an Action before completing Work", async () => {
     const { runtime, harness } = fixture(); await runtime.open();
-    const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Update the case" });
+    const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Update the case" }, creator);
     harness.enqueue(
       { call: { tool: "domain_case_get", input: {}, requestId: "read-1" } },
       { call: { tool: "domain_case_update", input: { value: "x" }, requestId: "write-1" } },
@@ -81,7 +102,7 @@ describe("AiricRuntime", () => {
     (definitions.definitions["cases/assist"]!.manifest as { capabilities: { allowed: string[] }; completion: { requiredCapabilities: string[] } }).capabilities.allowed = ["case.get"];
     (definitions.definitions["cases/assist"]!.manifest as { completion: { requiredCapabilities: string[] } }).completion.requiredCapabilities = [];
     await runtime.open();
-    const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Read without writing" });
+    const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Read without writing" }, creator);
     harness.enqueue({ text: "Read only" });
     await runtime.sendMessage(work.id, "Inspect", { id: "user", scopes: [] });
     expect(harness.envelopes[0]?.availableCapabilities).toEqual(["case.get"]);
@@ -93,12 +114,12 @@ describe("AiricRuntime", () => {
     const { runtime, definitions } = fixture();
     (definitions.definitions["cases/assist"]!.manifest as { capabilities: { allowed: string[] } }).capabilities.allowed = ["case.get"];
     await runtime.open();
-    await expect(runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Invalid definition" })).rejects.toThrow("must be allowed");
+    await expect(runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Invalid definition" }, creator)).rejects.toThrow("must be allowed");
   });
 
   it("records selected on-demand content in the next envelope", async () => {
     const { runtime, harness } = fixture(); await runtime.open();
-    const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Consider alternatives" });
+    const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Consider alternatives" }, creator);
     harness.enqueue({ call: { tool: "airic_read_work_document", input: { id: "precedent", reason: "The customer supplied information out of order" }, requestId: "doc-1" } }, { text: "I considered both paths." });
     await runtime.sendMessage(work.id, "Continue", { id: "user", scopes: [] });
     expect(harness.envelopes[0]?.instructions.map((block) => block.id)).toEqual(["process"]);
@@ -108,7 +129,7 @@ describe("AiricRuntime", () => {
 
   it("reloads a changed operating model for the next turn and preserves delivered content as evidence", async () => {
     const { runtime, harness, definitions } = fixture(); await runtime.open();
-    const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Follow live guidance" });
+    const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Follow live guidance" }, creator);
     harness.enqueue({ text: "First" });
     await runtime.sendMessage(work.id, "Begin", { id: "user", scopes: [] });
     definitions.definitions["cases/assist"]!.documents["process.md"] = "Follow the revised objective.";
@@ -125,14 +146,14 @@ describe("AiricRuntime", () => {
   it("refuses a harness result that never confirms actual context delivery", async () => {
     const { runtime } = fixture(); await runtime.open();
     runtime.options.harness = { capabilities: () => ({ resume: false, interrupt: false, contextHook: false, compactionTrace: false }), run: async () => ({ text: "Unverified" }) };
-    const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Stay governed" });
+    const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Stay governed" }, creator);
     await expect(runtime.sendMessage(work.id, "Continue", { id: "user", scopes: [] })).rejects.toThrow("without confirming");
     expect(runtime.getTrace(work.id).some((event) => event.type === "message.agent")).toBe(false);
   });
 
   it("stores reflection candidates as content-addressed evidence, not entities", async () => {
     const { runtime } = fixture(); await runtime.open();
-    const work = await runtime.createWork({ moduleId: "development", workTypeId: "reflection", objective: "Reflect" });
+    const work = await runtime.createWork({ moduleId: "development", workTypeId: "reflection", objective: "Reflect" }, creator);
     const definition = await runtime.loadDefinition("development", "reflection");
     const object = await runtime.recordReflectionCandidate(work.id, { targetKind: "operating-model", targetPath: "process.md", baseContentDigest: definition.digest, diff: "+Clarify alternate order", rationale: "Trace showed hesitation", evidenceEventIds: [] });
     expect(object.digest).toHaveLength(64);
@@ -141,7 +162,7 @@ describe("AiricRuntime", () => {
 
   it("does not let a rejected Command satisfy Work completion", async () => {
     const { runtime, harness } = fixture("rejected"); await runtime.open();
-    const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Respect the constraint" });
+    const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Respect the constraint" }, creator);
     harness.enqueue({ call: { tool: "domain_case_update", input: {}, requestId: "rejected-1" } });
     await expect(runtime.sendMessage(work.id, "Submit", { id: "user", scopes: [] })).rejects.toThrow("More evidence is required");
     await expect(runtime.completeWork(work.id, {})).rejects.toThrow("case.update");
@@ -152,7 +173,7 @@ describe("AiricRuntime", () => {
     const { runtime, harness, definitions } = fixture();
     (definitions.definitions["cases/assist"]!.manifest as { completion: { requiredCapabilities: string[]; requiredTools?: string[] } }).completion = { requiredCapabilities: [], requiredTools: ["workspace_changes"] };
     await runtime.open();
-    const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Produce governed files" });
+    const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Produce governed files" }, creator);
     await expect(runtime.completeWork(work.id, {})).rejects.toThrow("workspace_changes");
     harness.enqueue(
       { event: { type: "tool", payload: { phase: "end", name: "workspace_changes", isError: false, result: { changes: [] } } } },
@@ -171,7 +192,7 @@ describe("AiricRuntime", () => {
     const { runtime, harness, definitions } = fixture();
     (definitions.definitions["cases/assist"]!.manifest as { completion: { requiredCapabilities: string[]; requiredTools?: string[] } }).completion = { requiredCapabilities: [], requiredTools: ["workspace_check_domain_tests"] };
     await runtime.open();
-    const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Validate governed files" });
+    const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Validate governed files" }, creator);
     harness.enqueue(
       { event: { type: "tool", payload: { phase: "end", name: "workspace_check_domain_tests", isError: false } } },
       { call: { tool: "airic_complete_work", input: { result: {} }, requestId: "missing-check-evidence" } },
@@ -187,7 +208,7 @@ describe("AiricRuntime", () => {
 
   it("reconciles an unknown response by stable command identity without redispatch", async () => {
     const { runtime, harness, commandInvocations } = fixture("unknown"); await runtime.open();
-    const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Recover safely" });
+    const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Recover safely" }, creator);
     harness.enqueue({ call: { tool: "domain_case_update", input: { value: "x" }, requestId: "stable-1" } });
     await expect(runtime.sendMessage(work.id, "Update", { id: "user", scopes: [] })).rejects.toThrow("Reply was lost");
     const actionId = runtime.getTrace(work.id).find((event) => event.type === "action.prepared")?.actionId;
@@ -198,11 +219,11 @@ describe("AiricRuntime", () => {
 
   it("fails closed when a bound Domain build changes", async () => {
     const { runtime, domain, harness } = fixture(); await runtime.open();
-    const source = await runtime.createWork({ moduleId: "development", workTypeId: "reflection", objective: "Find a domain improvement" });
+    const source = await runtime.createWork({ moduleId: "development", workTypeId: "reflection", objective: "Find a domain improvement" }, creator);
     const candidate = await runtime.recordReflectionCandidate(source.id, { targetKind: "operating-model", targetPath: "process.md", baseContentDigest: domain.sourceBundle.digest, diff: "+Document the invariant reason", rationale: "Improve Agent guidance", evidenceEventIds: [] });
     await runtime.recordReflectionOutcome(source.id, { candidateDigest: candidate.digest, decision: "adopted", reviewer: "architect", appliedRef: { kind: "git-commit", id: "cases/assist", version: "abc" }, validation: { tests: "passed" } });
     expect(runtime.getWork(source.id)?.domainBindings).toEqual([]);
-    const bound = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Use the bound release" });
+    const bound = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Use the bound release" }, creator);
     (domain as { buildId: string }).buildId = "build-2";
     harness.enqueue({ call: { tool: "domain_case_get", input: {}, requestId: "read-after-build-change" } });
     await expect(runtime.sendMessage(bound.id, "Read", { id: "user", scopes: [] })).rejects.toThrow("BindingChanged");

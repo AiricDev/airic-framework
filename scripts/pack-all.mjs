@@ -8,7 +8,7 @@ const root = resolve(import.meta.dirname, "..");
 const destination = resolve(root, "artifacts/packs");
 await rm(destination, { recursive: true, force: true });
 await mkdir(destination, { recursive: true });
-const packages = ["framework", "client", "storage-files", "testing", "harness-pi", "server", "ui", "create-airic"];
+const packages = ["framework", "client", "storage-files", "testing", "harness-pi", "server", "acp", "ui", "create-airic"];
 const artifacts = {};
 for (const name of packages) {
   const directory = resolve(root, `packages/${name}`);

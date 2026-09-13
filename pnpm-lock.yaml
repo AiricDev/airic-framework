@@ -27,6 +27,31 @@ importers:
         specifier: 3.2.4
         version: 3.2.4(@types/node@24.3.0)(jiti@2.7.0)(jsdom@27.0.0)(yaml@2.9.0)
 
+  packages/acp:
+    dependencies:
+      '@agentclientprotocol/sdk':
+        specifier: 1.4.0
+        version: 1.4.0(zod@4.1.5)
+      '@airic/framework':
+        specifier: workspace:*
+        version: link:../framework
+      '@airic/server':
+        specifier: workspace:*
+        version: link:../server
+      ws:
+        specifier: 8.21.3
+        version: 8.21.3
+      zod:
+        specifier: 4.1.5
+        version: 4.1.5
+    devDependencies:
+      '@types/ws':
+        specifier: 8.5.13
+        version: 8.5.13
+      typescript:
+        specifier: 5.9.2
+        version: 5.9.2
+
   packages/client:
     devDependencies:
       typescript:
@@ -70,6 +95,9 @@ importers:
         specifier: 1.1.38
         version: 1.1.38
     devDependencies:
+      '@airic/testing':
+        specifier: workspace:*
+        version: link:../testing
       typescript:
         specifier: 5.9.2
         version: 5.9.2
@@ -134,6 +162,9 @@ importers:
 
   templates/default:
     dependencies:
+      '@airic/acp':
+        specifier: workspace:*
+        version: link:../../packages/acp
       '@airic/client':
         specifier: workspace:*
         version: link:../../packages/client
@@ -191,6 +222,11 @@ importers:
         version: 3.2.4(@types/node@24.3.0)(jiti@2.7.0)(jsdom@27.0.0)(yaml@2.9.0)
 
 packages:
+
+  '@agentclientprotocol/sdk@1.4.0':
+    resolution: {integrity: sha512-/eufudw+aFY1LKLolT6yFE6UMmYRl7fMJ/DEONSIyR6wI3slHWITBsANRGqXEY8FRzqUxwh7QEaGiZHcJPVThg==}
+    peerDependencies:
+      zod: ^3.25.0 || ^4.0.0
 
   '@anthropic-ai/sdk@0.91.1':
     resolution: {integrity: sha512-LAmu761tSN9r66ixvmciswUj/ZC+1Q4iAfpedTfSVLeswRwnY3n2Nb6Tsk+cLPP28aLOPWeMgIuTuCcMC6W/iw==}
@@ -952,6 +988,9 @@ packages:
   '@types/retry@0.12.0':
     resolution: {integrity: sha512-wWKOClTTiizcZhXnPY4wikVAwmdYHp8q6DmC+EJUzAMsycb7HB32Kh9RN4+0gExjmPmZSAQjgURXIGATPegAvA==}
 
+  '@types/ws@8.5.13':
+    resolution: {integrity: sha512-osM/gWBTPKgHV8XkTunnegTRIsvF6owmf5w+JtAfOw472dptdm0dlGv4xCt6GwQRcC2XVOvvRE/0bAoQcL2QkA==}
+
   '@vitejs/plugin-react@5.0.2':
     resolution: {integrity: sha512-tmyFgixPZCx2+e6VO9TNITWcCQl8+Nl/E8YbAyPVv85QCc7/A3JrdfG2A8gIzvVhWuzMOVrFW1aReaNxrI6tbw==}
     engines: {node: ^20.19.0 || >=22.12.0}
@@ -1702,6 +1741,10 @@ packages:
     resolution: {integrity: sha512-rcUUZqlLJgBC33IT3PNMgsCq6TzLQEG/Ei/KTCU0PedSWRMAXoOUN+4t/0H+Q8bdnLPdqUYnvboJT0bn/229qg==}
 
 snapshots:
+
+  '@agentclientprotocol/sdk@1.4.0(zod@4.1.5)':
+    dependencies:
+      zod: 4.1.5
 
   '@anthropic-ai/sdk@0.91.1(zod@4.1.5)':
     dependencies:
@@ -2519,6 +2562,10 @@ snapshots:
       csstype: 3.2.3
 
   '@types/retry@0.12.0': {}
+
+  '@types/ws@8.5.13':
+    dependencies:
+      '@types/node': 24.3.0
 
   '@vitejs/plugin-react@5.0.2(vite@7.1.4(@types/node@24.3.0)(jiti@2.7.0)(yaml@2.9.0))':
     dependencies:

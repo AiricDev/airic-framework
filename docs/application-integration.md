@@ -15,4 +15,6 @@ Cross-module code imports only the provider's `public/` contracts. The consumer 
 
 WorkTypes live in `src/modules/<id>/operating/<work-type>`. Operating content is reloaded before each model call. Executable code requires build/restart. The Application host mounts module business routes under `/api/app`, Airic under `/api/airic`, static assets and then structured 404. Browser contributions provide navigation, routes, result views and Work starters without editing global route tables.
 
+The host must establish a trusted actor before exposing Work APIs. The same host-owned access policy gates HTTP, SSE, runtime capability calls and optional ACP WebSocket sessions. `Work.createdBy` is set from that actor at creation; records without a trusted creator are not implicitly claimed by a browser user. `@airic/acp` adds Agent interaction only, while each module's Application Services remain authoritative for business data, approvals and exports. See the [ACP browser contract](./acp-browser-contract.md).
+
 Use the version-matched [development skill](../skills/airic-app-development/SKILL.md) before changing an application boundary.

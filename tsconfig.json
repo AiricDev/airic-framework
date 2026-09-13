@@ -7,6 +7,7 @@
     { "path": "packages/testing" },
     { "path": "packages/harness-pi" },
     { "path": "packages/server" },
+    { "path": "packages/acp" },
     { "path": "packages/ui" },
     { "path": "packages/create-airic" },
     { "path": "templates/default" }

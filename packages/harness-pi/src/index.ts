@@ -56,13 +56,19 @@ export class PiHarness implements AgentHarness {
     const binding = await this.#binding(input.workId, input.tools, active);
     binding.active = active;
     let text = "";
+    let deltaWrites = Promise.resolve();
     const stop = binding.session.subscribe((event) => {
-      if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") text += event.assistantMessageEvent.delta;
+      if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+        const delta = event.assistantMessageEvent.delta;
+        text += delta;
+        deltaWrites = deltaWrites.then(() => input.onEvent({ type: "message", payload: { delta } }));
+      }
     });
     const abort = () => binding.session.abort();
     input.signal?.addEventListener("abort", abort, { once: true });
     try {
       await binding.session.prompt(input.message);
+      await deltaWrites;
       await binding.flush();
       return { text };
     } finally {

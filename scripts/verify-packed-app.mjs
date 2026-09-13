@@ -45,6 +45,7 @@ const localPackages = {
   "storage-files": "@airic/storage-files",
   "harness-pi": "@airic/harness-pi",
   server: "@airic/server",
+  acp: "@airic/acp",
   ui: "@airic/ui",
   client: "@airic/client",
 };

@@ -1,44 +1,38 @@
 # Airic Framework Architecture Map
 
-- Last updated: 2026-09-11
+- Last updated: 2026-09-12
 - Architectural decision owners: Airic maintainers
 
-## Layer layout
+## Ownership
 
-| Layer | Location | Notes |
+| Layer | Location | Owns |
 |---|---|---|
-| Runtime policy | `packages/framework/src/application` | Work, completion, trace and capability orchestration |
-| Integration contracts | `packages/framework/src/integration` | Harness and DomainModule contracts |
-| Adapters | `packages/harness-pi`, `packages/storage-files` | Pi execution, controlled workspace and file persistence |
-| Delivery | `packages/server`, `packages/client`, `packages/ui` | Mountable HTTP, browser SDK and generic workbench |
-| Application template | `templates/default` | Example domain plus stable host and writable application assembly |
-| Generator | `packages/create-airic` | Copies the template and initializes Git |
+| Framework core | `packages/framework` | Work/Action lifecycle, module and WorkType resolution, context, capability mediation and canonical trace |
+| Storage | `packages/storage-files` | Runtime journal, trace evidence and module package loading |
+| Agent harness | `packages/harness-pi` | Pi execution, model sessions and controlled workspace tools |
+| HTTP delivery | `packages/server` | Host-mounted Airic HTTP/SSE API with a trusted actor and host access policy |
+| ACP delivery | `packages/acp` | Optional, Work-bound same-origin WebSocket projection of Agent interaction |
+| Browser delivery | `packages/client`, `packages/ui` | Typed HTTP client and optional generic Workbench |
+| Application | Generated `src/app`, `src/main.ts`, `src/client.tsx` | Identity, access policy, module assembly, business routes, navigation and one server |
+| Module | Generated `src/modules/<id>` | Vertical-slice Domain, use cases, Operating WorkTypes, Experience and adapters |
 
-## Primary routes
+## Critical paths
 
-| Capability | Owner | Entry point | Verification |
-|---|---|---|---|
-| Governed Work execution | Airic runtime | `packages/framework/src/application/runtime.ts` | `packages/framework/test/runtime.test.ts` |
-| Smith workspace access | Pi adapter | `packages/harness-pi/src/workspace.ts` | `packages/harness-pi/test/workspace.test.ts` |
-| Airic HTTP API | Server adapter | `packages/server/src/index.ts` | `packages/server/test/server.test.ts` |
-| Browser projection | Client/UI adapters | `packages/client`, `packages/ui` | package tests and template Playwright tests |
-| Application slice registration | Generated application | `src/integration/application.ts` | application, HTTP and browser tests |
+| Behavior | Owner | Verification |
+|---|---|---|
+| Work creator, authority and per-turn serialization | `packages/framework/src/application/runtime.ts` | `packages/framework/test/runtime.test.ts` |
+| HTTP/SSE filtering and access checks | `packages/server/src/index.ts` | `packages/server/test/server.test.ts` |
+| ACP bind, prompt, cancel, replay | `packages/acp/src/index.ts` | `packages/acp/test/gateway.test.ts` |
+| Module dependency and public contract resolution | `packages/framework/src/application` | module registry tests |
+| Workspace scope and secret protection | `packages/harness-pi/src/workspace.ts` | workspace tests |
+| Generated standalone app | `templates/default`, `packages/create-airic` | `scripts/verify-packed-app.mjs` |
 
-## Placement rules
+## Boundary rules
 
-- Stable domain invariants stay in `src/domain`; use-case orchestration and its ports stay in `src/application`.
-- Infrastructure implements application-owned ports and is created only by `src/integration/application.ts`.
-- The application assembly constructs each Application Service once and shares it with HTTP routes and Airic DomainModules.
-- `src/main.ts` and `src/client.tsx` are stable host roots; Smiths do not modify them.
-- Workspace read and write authority is declared per Work Definition by the host; tool evidence is validated before completion.
-- Workspace grants may narrow writes to a validated Work-input target, so a Smith cannot modify sibling packages.
-- Domain capabilities are deny-by-default at the Work Definition boundary; `capabilities.allowed` controls the catalog and tools delivered to a Work, and completion requirements must be a subset.
-- Dependency rules are enforced by `scripts/architecture-check.mjs` and the package test suites.
-
-## Boundary debts
-
-—
-
-## Open ownership questions
-
-- Domain-specific infrastructure remains host/developer-owned; Experience Smith may consume existing adapters but must hand off when a new persistence adapter is required.
+- Framework core imports neither HTTP, React, ACP nor a business domain.
+- The Application host selects modules and binds a trusted actor and authorization policy; HTTP, SSE, ACP and runtime capability execution check that policy. WorkType imports do not grant user permission.
+- A WorkType's Operating Model is reloaded on the next turn; Domain release/build/source bindings remain pinned. Airic trace records what was delivered and done.
+- Module Domain and Application policy remain independent of Airic, HTTP, React and persistence. Cross-module consumers use public contracts and owner-provided services, not repositories or deep imports.
+- ACP is an interaction projection. Business data, command receipts, review, approval and export remain owned by module Application Services and their repositories.
+- Module Smith writes only its host-scoped target module. The host owns fixed checks; the Agent cannot use a general shell or Git write tools.
+- `scripts/architecture-check.mjs` and package tests enforce these boundaries.

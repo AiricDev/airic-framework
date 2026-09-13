@@ -4,6 +4,7 @@
   "include": ["src/**/*.ts", "src/**/*.tsx"],
   "references": [
     { "path": "../../packages/framework" },
+    { "path": "../../packages/acp" },
     { "path": "../../packages/storage-files" },
     { "path": "../../packages/harness-pi" },
     { "path": "../../packages/server" },

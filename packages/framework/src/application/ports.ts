@@ -42,6 +42,13 @@ export interface HarnessEvent {
   providerEventId?: string;
 }
 
+/** Transient execution feedback; canonical history is always read from TraceEvent. */
+export interface LiveWorkEvent {
+  workId: string;
+  type: "text-delta";
+  text: string;
+}
+
 export interface DeliveryRecord {
   envelopeDigest: string;
   adapter: { id: string; version: string };

@@ -1,5 +1,6 @@
 export interface WorkDto {
   id: string;
+  createdBy?: string;
   objective: string;
   input: unknown;
   status: "open" | "completed" | "cancelled";
@@ -17,6 +18,7 @@ export interface WorkTypeSummaryDto { moduleId: string; workTypeId: string; titl
 export interface WorkTypeFilesDto { digest: string; files: Record<string, string> }
 export interface WorkspaceStatusDto { gitHead?: string; dirty: boolean; status: string; diff: string }
 export interface HarnessCapabilitiesDto { resume: boolean; interrupt: boolean; contextHook: boolean; compactionTrace: boolean; workspaceWorkTypes?: string[] }
+export interface AgentConnectionDto { url: string; cwd: string; sessionId?: string }
 export interface AiricErrorBody { error: string; code?: string; details?: unknown }
 export class AiricClientError extends Error {
   constructor(message: string, readonly status: number, readonly code?: string, readonly details?: unknown) { super(message); this.name = "AiricClientError"; }
@@ -48,6 +50,7 @@ export class AiricClient {
   createWork(input: CreateWorkInput): Promise<WorkDto> { return this.#post("/works", { input: {}, ...input }); }
   getWork(id: string): Promise<WorkDetailDto> { return this.#get(`/works/${encodeURIComponent(id)}`); }
   getTrace(id: string): Promise<TraceDto[]> { return this.#get(`/works/${encodeURIComponent(id)}/trace`); }
+  getAgentConnection(id: string): Promise<AgentConnectionDto> { return this.#get(`/works/${encodeURIComponent(id)}/agent-connection`); }
   sendMessage(id: string, message: string): Promise<{ text: string; result?: unknown }> { return this.#post(`/works/${encodeURIComponent(id)}/messages`, { message }); }
   interrupt(id: string): Promise<{ interrupted: boolean }> { return this.#post(`/works/${encodeURIComponent(id)}/interrupt`, {}); }
   complete(id: string, result: unknown): Promise<WorkDto> { return this.#post(`/works/${encodeURIComponent(id)}/complete`, { result }); }
