@@ -2,7 +2,7 @@ import { z } from "zod";
 import YAML from "yaml";
 import type { DomainProvider } from "../integration/contracts.js";
 import type { WorkTypeRef } from "../domain/work.js";
-import type { WorkTypeSource } from "./ports.js";
+import type { ModuleSource } from "./ports.js";
 
 const domainImportSchema = z.object({
   moduleId: z.string().min(1),
@@ -44,7 +44,7 @@ export interface ResolvedWorkType {
 export class ModuleRegistry {
   readonly #manifests = new Map<string, ModuleManifest>();
   readonly #providers = new Map<string, DomainProvider>();
-  constructor(readonly source: WorkTypeSource) {}
+  constructor(readonly source: ModuleSource) {}
 
   async load(moduleIds?: readonly string[]): Promise<void> {
     const ids = moduleIds ?? await this.source.listModules();

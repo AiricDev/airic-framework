@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
 import YAML from "yaml";
 import { z } from "zod";
-import type { WorkTypeRef } from "../domain/work.js";
-import type { WorkTypeSource } from "./ports.js";
+import type { OperatingModelSnapshot } from "./operating-model.js";
 
 const documentSchema = z.object({
   id: z.string().min(1),
@@ -44,11 +43,11 @@ function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-export async function loadWorkDefinition(source: WorkTypeSource, ref: WorkTypeRef & { packagePath: string }): Promise<WorkDefinition> {
-  const raw = await source.readManifest(ref);
+export async function loadWorkDefinition(snapshot: OperatingModelSnapshot): Promise<WorkDefinition> {
+  const raw = snapshot.manifest;
   const value = typeof raw === "string" ? YAML.parse(raw) : raw;
   const manifest = manifestSchema.parse(value);
-  if (manifest.id !== ref.workTypeId) throw new Error(`WorkType id mismatch: expected ${ref.workTypeId}, got ${manifest.id}`);
+  if (manifest.id !== snapshot.target.workTypeId) throw new Error(`WorkType id mismatch: expected ${snapshot.target.workTypeId}, got ${manifest.id}`);
   const allowedCapabilities = new Set(manifest.capabilities.allowed);
   const undeclaredCompletionCapabilities = manifest.completion.requiredCapabilities.filter((id) => !allowedCapabilities.has(id));
   if (undeclaredCompletionCapabilities.length) {
@@ -64,7 +63,8 @@ export async function loadWorkDefinition(source: WorkTypeSource, ref: WorkTypeRe
   }
   const docs = new Map<string, LoadedDocument>();
   for (const spec of manifest.documents) {
-    const content = await source.readDocument(ref, spec.path);
+    const content = snapshot.documents.find((document) => document.path === spec.path)?.content;
+    if (content === undefined) throw new Error(`Operating Model revision is missing document ${spec.path}`);
     docs.set(spec.id, { ...spec, content, digest: digest(content) });
   }
   const requiredIds = new Set(manifest.documents.filter((doc) => doc.load === "required").map((doc) => doc.id));
@@ -75,17 +75,18 @@ export async function loadWorkDefinition(source: WorkTypeSource, ref: WorkTypeRe
   };
   for (const id of [...requiredIds]) visit(id);
   const packageFiles = [];
-  for (const path of await source.listWorkTypeFiles(ref)) {
+  for (const path of snapshot.documents.map((document) => document.path)) {
     const content = path === "work.yml"
       ? (typeof raw === "string" ? raw : JSON.stringify(value))
-      : await source.readDocument(ref, path);
+      : snapshot.documents.find((document) => document.path === path)?.content;
+    if (content === undefined) throw new Error(`Operating Model revision is missing file ${path}`);
     packageFiles.push({ path, digest: digest(content) });
   }
   const packageDigest = digest(JSON.stringify(packageFiles.sort((a, b) => a.path.localeCompare(b.path))));
   return {
     manifest,
     digest: packageDigest,
-    source: await source.status?.() ?? { dirty: false },
+    source: { ...(snapshot.sourceRef ? { gitHead: snapshot.sourceRef } : {}), dirty: false },
     required: [...requiredIds].map((id) => docs.get(id)!),
     discoverable: [...docs.values()].filter((doc) => !requiredIds.has(doc.id)).map(({ content: _content, ...doc }) => doc),
     documents: docs,

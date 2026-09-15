@@ -19,7 +19,10 @@ export interface WorkTypeFilesDto { digest: string; files: Record<string, string
 export interface WorkspaceStatusDto { gitHead?: string; dirty: boolean; status: string; diff: string }
 export interface HarnessCapabilitiesDto { resume: boolean; interrupt: boolean; contextHook: boolean; compactionTrace: boolean; workspaceWorkTypes?: string[] }
 export interface AgentConnectionDto { url: string; cwd: string; sessionId?: string }
-export interface ReflectionCandidateDto { candidate: Record<string, unknown>; diff: string }
+export interface OperatingModelRevisionDto { revisionId: string; contentDigest: string }
+export interface OperatingModelSnapshotDto { target: { moduleId: string; workTypeId: string }; ref: OperatingModelRevisionDto; parentRef?: OperatingModelRevisionDto; manifest: unknown; documents: readonly { path: string; content: string; digest: string }[]; sourceRef?: string }
+export interface OperatingModelProposalDto { proposalId: string; target: { moduleId: string; workTypeId: string }; baseRevision: OperatingModelRevisionDto; candidateDigest: string; patch: string; rationale: string; evidenceRefs: readonly { workId: string; eventId: string }[]; validationPlan: unknown; proposer: { kind: "human" | "reflection"; id: string }; status: string; supersedesProposalId?: string }
+export interface OperatingModelOperationDto { operationId: string; status: "committed" | "pending" | "unknown" | "rejected"; result?: unknown; error?: { code: string; message: string; details?: unknown } }
 export interface WorkEvidenceDto { digest: string; size: number; extraction?: { digest: string; blocks: number; warnings: readonly string[] } }
 export interface AiricErrorBody { error: string; code?: string; details?: unknown }
 export class AiricClientError extends Error {
@@ -52,7 +55,6 @@ export class AiricClient {
   createWork(input: CreateWorkInput): Promise<WorkDto> { return this.#post("/works", { input: {}, ...input }); }
   getWork(id: string): Promise<WorkDetailDto> { return this.#get(`/works/${encodeURIComponent(id)}`); }
   getTrace(id: string): Promise<TraceDto[]> { return this.#get(`/works/${encodeURIComponent(id)}/trace`); }
-  getReflectionCandidate(id: string, digest: string): Promise<ReflectionCandidateDto> { return this.#get(`/works/${encodeURIComponent(id)}/reflection-candidates/${encodeURIComponent(digest)}`); }
   getAgentConnection(id: string): Promise<AgentConnectionDto> { return this.#get(`/works/${encodeURIComponent(id)}/agent-connection`); }
   sendMessage(id: string, message: string, turnContextRefs?: readonly { namespace: string; resourceType: string; resourceId: string; revision?: string; selection?: Readonly<Record<string, unknown>> }[]): Promise<{ text: string; result?: unknown }> { return this.#post(`/works/${encodeURIComponent(id)}/messages`, { message, ...(turnContextRefs?.length ? { turnContextRefs } : {}) }); }
   interrupt(id: string): Promise<{ interrupted: boolean }> { return this.#post(`/works/${encodeURIComponent(id)}/interrupt`, {}); }
@@ -62,6 +64,15 @@ export class AiricClient {
   getWorkType(moduleId: string, workTypeId: string): Promise<WorkTypeFilesDto> { return this.#get(`/work-types/${encodeURIComponent(moduleId)}/${encodeURIComponent(workTypeId)}`); }
   getCapabilities(): Promise<HarnessCapabilitiesDto> { return this.#get("/capabilities"); }
   getWorkspace(): Promise<WorkspaceStatusDto> { return this.#get("/workspace"); }
+  listOperatingModels(): Promise<{ moduleId: string; workTypeId: string }[]> { return this.#get("/operating-models"); }
+  getActiveOperatingModel(moduleId: string, workTypeId: string): Promise<OperatingModelSnapshotDto> { return this.#get(`/operating-models/${encodeURIComponent(moduleId)}/${encodeURIComponent(workTypeId)}/active`); }
+  listOperatingModelProposals(): Promise<OperatingModelProposalDto[]> { return this.#get("/operating-model-proposals"); }
+  getOperatingModelProposal(proposalId: string): Promise<OperatingModelProposalDto | undefined> { return this.#get(`/operating-model-proposals/${encodeURIComponent(proposalId)}`); }
+  proposeOperatingModel(input: Omit<OperatingModelProposalDto, "proposalId" | "candidateDigest" | "status" | "proposer"> & { operationId: string }): Promise<OperatingModelOperationDto> { return this.#post("/operating-model-proposals", input); }
+  reviewOperatingModel(proposalId: string, input: { operationId: string; proposalDigest: string; decision: "approved" | "rejected"; comment?: string; validationRequirements: unknown }): Promise<OperatingModelOperationDto> { return this.#post(`/operating-model-proposals/${encodeURIComponent(proposalId)}/review`, input); }
+  rejectOperatingModel(proposalId: string, input: { operationId: string; comment?: string }): Promise<OperatingModelOperationDto> { return this.#post(`/operating-model-proposals/${encodeURIComponent(proposalId)}/reject`, input); }
+  adoptOperatingModel(proposalId: string, input: { operationId: string; expectedActiveRevision: OperatingModelRevisionDto; proposalDigest: string; reviewId: string; reviewDigest: string }): Promise<OperatingModelOperationDto> { return this.#post(`/operating-model-proposals/${encodeURIComponent(proposalId)}/adopt`, input); }
+  inspectOperatingModelOperation(operationId: string): Promise<OperatingModelOperationDto | undefined> { return this.#get(`/operating-model-operations/${encodeURIComponent(operationId)}`); }
   uploadEvidence(workId: string, input: { name: string; mediaType: string; contentBase64: string }): Promise<{ ref: unknown }> { return this.#post(`/works/${encodeURIComponent(workId)}/uploads`, input); }
   async uploadEvidenceFile(workId: string, file: File): Promise<WorkEvidenceDto> {
     return this.#checked<WorkEvidenceDto>(await this.#fetch(`${this.baseUrl}/works/${encodeURIComponent(workId)}/uploads`, { method: "PUT", headers: { "content-type": file.type || "application/octet-stream", "x-airic-filename": encodeURIComponent(file.name) }, body: file }));

@@ -9,10 +9,10 @@ field in tool input is never trusted.
 
 - `GET /airic/v1/manifest` returns the domain release and JSON-Schema-described query/command capabilities.
 - `POST /airic/v1/queries/{capabilityId}` accepts a Work correlation envelope and `input`, and returns authoritative read data.
-- `POST /airic/v1/commands/{capabilityId}` additionally requires a stable `commandId`. A command receipt is `committed`, `pending`, or `rejected`.
+- `POST /airic/v1/commands/{capabilityId}` additionally requires a stable `commandId`. A command receipt is `committed`, `pending`, `rejected`, or `unknown`.
 - `GET /airic/v1/commands/{commandId}` returns the durable receipt for reconciliation after a lost response.
 - `GET /airic/v1/events?cursor={eventId}` projects resumable business events as SSE; it is not the canonical audit trail.
 
-Command request envelopes carry `workId`, `actionId`, `commandId`, `expectedDomainRelease`, optional `targetRevision`, and `input`. The receiver must reject a mismatched release or revision before mutating Business State. Unknown external results remain pending until the receiver can inspect the stable command ID; callers must not blindly retry with a new ID.
+Command request envelopes carry `workId`, `actionId`, `commandId`, `expectedDomainRelease`, optional `targetRevision`, and `input`. The receiver must reject a mismatched release or revision before mutating Business State. An `unknown` result means the caller has no authoritative outcome; inspect the stable command ID before retrying and never mint a new identity for the same intent.
 
 The TypeScript reference implementation is `createHttpDomainProvider` from `@airic/framework`. CertReporter is the Python reference service.

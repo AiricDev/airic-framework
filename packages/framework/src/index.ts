@@ -3,6 +3,7 @@ export * from "./domain/action.js";
 export * from "./integration/contracts.js";
 export * from "./integration/http-domain.js";
 export * from "./application/ports.js";
+export * from "./application/operating-model.js";
 export * from "./application/module.js";
 export * from "./application/work-definition.js";
 export * from "./application/context.js";

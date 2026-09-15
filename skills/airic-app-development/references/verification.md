@@ -2,7 +2,7 @@
 
 Run domain unit tests without Airic. Add DomainProvider contract tests for trusted context, input/output shape, rejection, atomic receipt persistence, inspection and release mismatch. Use FakeHarness for context closure, actual registered tool names, delivery evidence, Action ordering, completion and reflection trace.
 
-Inject failures before and after journal rename, after domain commit but before reply, on duplicate delivery, stale revision, second writer and restart. Browser smoke must cover create Work, domain rejection, continued conversation, committed outcome, refresh and restart.
+Inject failures before and after journal rename, after domain commit but before reply, on duplicate delivery, stale revision, second writer and restart. For Operating Model Repository changes, test immutable reads, evidence-bound proposal scope, review binding, adoption CAS, operation inspection after an uncertain result, and revision pinning within one turn. Browser smoke must cover create Work, domain rejection, continued conversation, committed outcome, refresh and restart.
 
 When exposing browser Work access, test anonymous and cross-actor denial consistently across HTTP list/detail/trace, SSE, ACP handshake and every ACP call. Test permission revocation during streaming, wrong Origin, forged `cwd`/session ID, duplicate session creation, concurrent prompts, cancellation and `session/load` after gateway restart. A Reviewer or other read-only actor must not gain prompt, interruption, approval or export authority through ACP. Verify streamed updates against canonical trace and business HTTP state; do not assert that a WebSocket message itself commits business data. Real Pi smoke should be read-only unless the task explicitly requires a business effect.
 

@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DirectoryModuleSource, FileRuntimeStore } from "@airic/storage-files";
+import { DirectoryModuleSource, FileRuntimeStore, GitOperatingModelRepository } from "@airic/storage-files";
 import { loadWorkDefinition } from "@airic/framework";
 import type { RuntimeEvent } from "@airic/framework";
 
@@ -57,11 +57,30 @@ describe("FileRuntimeStore", () => {
     await writeFile(join(root, "process.md"), "First content");
     const definitions = new DirectoryModuleSource(join(directory, "modules"), { gitRoot: directory });
     const ref = { moduleId: "example", workTypeId: "assist", packagePath: "operating/assist" };
-    const first = await loadWorkDefinition(definitions, ref);
+    const first = await loadWorkDefinition(await snapshotFromWorkingTree(definitions, ref));
     await writeFile(join(root, "process.md"), "Second content");
-    const second = await loadWorkDefinition(definitions, ref);
+    const second = await loadWorkDefinition(await snapshotFromWorkingTree(definitions, ref));
     expect(second.digest).not.toBe(first.digest);
     expect(second.required[0]?.content).toBe("Second content");
+  });
+
+  it("keeps immutable Operating Model proposals and active revisions in private Git state", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "airic-operating-model-"));
+    const repository = new GitOperatingModelRepository(directory);
+    const target = { moduleId: "example", workTypeId: "assist" };
+    const baseline = { target, ref: { revisionId: "baseline:one", contentDigest: "one" }, manifest: { schemaVersion: 1, id: "assist", title: "Assist", capabilities: { allowed: [] }, documents: [{ id: "process", path: "process.md", title: "Process", role: "process", load: "required", requires: [] }], completion: { requiredCapabilities: [] } }, documents: [{ path: "process.md", content: "Original", digest: "original" }] } as const;
+    await repository.bootstrap(baseline);
+    const proposalResult = await repository.propose({ operationId: "proposal-1", target, baseRevision: baseline.ref, patch: JSON.stringify({ documents: { "process.md": "Revised" } }), rationale: "Clearer", evidenceRefs: [], validationPlan: { checks: ["schema"] }, proposer: { kind: "human", id: "u1" } });
+    expect(proposalResult.status).toBe("committed");
+    if (proposalResult.status !== "committed" || !("proposalId" in proposalResult.result)) throw new Error("proposal missing");
+    const proposal = proposalResult.result;
+    const reviewResult = await repository.review({ operationId: "review-1", proposalId: proposal.proposalId, proposalDigest: proposal.candidateDigest, decision: "approved", reviewer: "u2", validationRequirements: { checks: ["schema"] } });
+    expect(reviewResult.status).toBe("committed");
+    if (reviewResult.status !== "committed" || !("reviewId" in reviewResult.result)) throw new Error("review missing");
+    const review = reviewResult.result;
+    const adopted = await repository.adopt({ operationId: "adopt-1", proposalId: proposal.proposalId, proposalDigest: proposal.candidateDigest, reviewId: review.reviewId, reviewDigest: review.reviewDigest, expectedActiveRevision: baseline.ref, reviewer: "u2" });
+    expect(adopted.status).toBe("committed");
+    expect((await repository.readRevision(target, await repository.resolveActive(target))).documents[0]?.content).toBe("Revised");
   });
 
   it("rebuilds a disposable snapshot anchored to the journal", async () => {
@@ -73,3 +92,8 @@ describe("FileRuntimeStore", () => {
     await store.close();
   });
 });
+
+async function snapshotFromWorkingTree(source: DirectoryModuleSource, ref: { moduleId: string; workTypeId: string; packagePath: string }) {
+  const exported = await source.exportFiles(ref); const contentDigest = exported.digest;
+  return { target: { moduleId: ref.moduleId, workTypeId: ref.workTypeId }, ref: { revisionId: `working:${contentDigest.slice(0, 12)}`, contentDigest }, manifest: exported.files["work.yml"]!, documents: Object.entries(exported.files).map(([path, content]) => ({ path, content, digest: content })) };
+}

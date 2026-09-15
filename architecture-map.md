@@ -1,6 +1,6 @@
 # Airic Framework Architecture Map
 
-- Last updated: 2026-09-12
+- Last updated: 2026-09-15
 - Architectural decision owners: Airic maintainers
 
 ## Ownership
@@ -8,7 +8,7 @@
 | Layer | Location | Owns |
 |---|---|---|
 | Framework core | `packages/framework` | Work/Action lifecycle, module and WorkType resolution, context, capability mediation and canonical trace |
-| Storage | `packages/storage-files` | Runtime journal, trace evidence and module package loading |
+| Storage | `packages/storage-files` | Runtime journal, trace evidence, Module discovery helper and Git-backed Operating Model Repository |
 | Agent harness | `packages/harness-pi` | Pi execution, model sessions and controlled workspace tools |
 | HTTP delivery | `packages/server` | Host-mounted Airic HTTP/SSE API with a trusted actor and host access policy |
 | ACP delivery | `packages/acp` | Optional, Work-bound same-origin WebSocket projection of Agent interaction |
@@ -22,12 +22,12 @@
 |---|---|---|
 | Work creator, authority and per-turn serialization | `packages/framework/src/application/runtime.ts` | `packages/framework/test/runtime.test.ts` |
 | HTTP/SSE filtering and access checks | `packages/server/src/index.ts` | `packages/server/test/server.test.ts` |
-| Sensitive trace read audit hook and Reflection candidate evidence retrieval | `packages/server/src/index.ts`, `packages/framework/src/application/runtime.ts` | server and runtime tests |
+| Sensitive trace read audit hook, reflection proposal linkage and Operating Model repository APIs | `packages/server/src/index.ts`, `packages/framework/src/application/runtime.ts`, `packages/framework/src/application/operating-model.ts` | server and runtime tests |
 | Host-extracted Work evidence, bounded binary upload and on-demand Agent reading | `packages/framework/src/application/runtime.ts`, `packages/server/src/index.ts`, `packages/client/src/index.ts` | runtime, server and client tests |
 | ACP bind, prompt, cancel, replay | `packages/acp/src/index.ts` | `packages/acp/test/gateway.test.ts` |
 | Module dependency and public contract resolution | `packages/framework/src/application` | module registry tests |
 | Remote business-system integration | `packages/framework/src/integration/http-domain.ts` | `packages/framework/test/http-domain.test.ts` |
-| Review-to-adoption Operating Model seam | `packages/framework/src/application/ports.ts`, `packages/framework/src/application/runtime.ts` | `packages/framework/test/runtime.test.ts` |
+| Immutable Operating Model repository, proposal/adoption CAS and private Git refs | `packages/framework/src/application/operating-model.ts`, `packages/storage-files/src/index.ts` | runtime and storage repository tests |
 | Workspace scope and secret protection | `packages/harness-pi/src/workspace.ts` | workspace tests |
 | Generated standalone app | `templates/default`, `packages/create-airic` | `scripts/verify-packed-app.mjs` |
 
@@ -42,7 +42,7 @@
 - `createHttpDomainProvider` adapts the `airic-domain/v1` protocol to the existing inward `DomainProvider` port. Its host-owned `requestHeaders` signs serialized transport requests only; it carries Work/Action correlation and expected releases, but never makes tool-input identity authoritative. Network loss, timeout and unparseable replies are `unknown` and require inspection/reconciliation.
 - `TurnContextRef` is traceable UI navigation context. It reaches the ContextEnvelope as a non-authoritative hint; it cannot change the Work target, identity or authorization.
 - Business systems own Business State, deterministic Cognitive Interfaces and typed Capability APIs. Airic owns Work/Action/trace and never turns a projection into authoritative business data; see `docs/agent-business-state-boundary.md`.
-- Reflection is advisory. `OperatingModelChangePort` is the only optional adoption seam and records `reflection.adopted` only after a host adapter supplies an actual applied reference and validation evidence. There is intentionally no default adapter or Operating Model asset lifecycle in Framework.
+- Operating Model assets are an immutable repository boundary. Runtime receives only `OperatingModelRuntimePort`; Reflection receives only `OperatingModelLearningPort`; trusted human UI receives `OperatingModelGovernancePort`. The Git-backed reference adapter stores private refs without changing the checked-out project. Runtime pins a revision within a turn and records a change only when the following turn sees a new active revision.
 - The Application host owns document extraction via `RuntimeOptions.extractEvidence`; Airic stores the original and text projection as Work-bound evidence and limits Agent reads to a locator on the same Work. This is not a business attachment or approval.
 - Module Smith writes only its host-scoped target module. The host owns fixed checks; the Agent cannot use a general shell or Git write tools.
 - `scripts/architecture-check.mjs` and package tests enforce these boundaries.

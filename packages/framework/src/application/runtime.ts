@@ -3,7 +3,8 @@ import { prepareAction, settleAction, type Action } from "../domain/action.js";
 import { createWork, reviseWork, type Work } from "../domain/work.js";
 import { bindingRef, DomainInvocationError, type CommandReceipt, type DomainProvider, type TrustedCallContext } from "../integration/contracts.js";
 import { assembleContext, hash, type TurnContextRef } from "./context.js";
-import type { AgentHarness, HarnessTool, LiveWorkEvent, OperatingModelChangePort, RuntimeEvent, RuntimeStore, TraceEvent, WorkEvidenceExtraction } from "./ports.js";
+import type { AgentHarness, HarnessTool, LiveWorkEvent, RuntimeEvent, RuntimeStore, TraceEvent, WorkEvidenceExtraction } from "./ports.js";
+import type { OperatingModelLearningPort, OperatingModelRevisionRef, OperatingModelRuntimePort } from "./operating-model.js";
 import { loadWorkDefinition, type WorkDefinition } from "./work-definition.js";
 import type { ModuleRegistry } from "./module.js";
 
@@ -16,13 +17,8 @@ export interface RuntimeOptions {
   authorizeWork?: (actor: TrustedCallContext["actor"], work: Work, action: "prompt" | "capability" | "read-trace") => Promise<boolean> | boolean;
   onTraceRead?: (actor: TrustedCallContext["actor"], work: Work, reason: string) => Promise<void>;
   extractEvidence?: (input: { name: string; mediaType: string; content: Uint8Array }) => Promise<WorkEvidenceExtraction>;
-  /** Host-owned change management; omitted hosts remain review-only. */
-  operatingModelChanges?: OperatingModelChangePort;
-}
-
-export class OperatingModelChangeNotConfigured extends Error {
-  readonly code = "OperatingModelChangeNotConfigured";
-  constructor() { super("Operating Model change management is not configured"); }
+  operatingModels: OperatingModelRuntimePort;
+  operatingModelLearning?: OperatingModelLearningPort;
 }
 
 export interface CreateWorkInput {
@@ -40,6 +36,7 @@ export class AiricRuntime {
   readonly #liveListeners = new Set<(event: LiveWorkEvent) => void>();
   readonly #controllers = new Map<string, AbortController>();
   readonly #activeTurns = new Set<string>();
+  readonly #turnRevisions = new Map<string, OperatingModelRevisionRef>();
   readonly #now: () => Date;
   readonly #id: () => string;
 
@@ -59,8 +56,9 @@ export class AiricRuntime {
   }
 
   async loadDefinition(moduleId: string, workTypeId: string): Promise<WorkDefinition> {
-    const resolved = this.options.modules.resolve({ moduleId, workTypeId });
-    return loadWorkDefinition(this.options.modules.source, { moduleId, workTypeId, packagePath: resolved.packagePath });
+    this.options.modules.resolve({ moduleId, workTypeId });
+    const target = { moduleId, workTypeId };
+    return loadWorkDefinition(await this.options.operatingModels.readRevision(target, await this.options.operatingModels.resolveActive(target)));
   }
 
   listWorks(): readonly Work[] { return [...this.#works.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }
@@ -98,6 +96,7 @@ export class AiricRuntime {
 
   async #runTurn(work: Work, message: string, actor: TrustedCallContext["actor"], turnContextRefs?: readonly TurnContextRef[]): Promise<{ text: string; result?: unknown }> {
     const workId = work.id;
+    this.#turnRevisions.set(workId, await this.options.operatingModels.resolveActive(work.workType));
     await this.#traceEvent(workId, "message.user", actor.id, { text: message, ...(turnContextRefs?.length ? { turnContextRefs } : {}) });
     const domains = this.#domainsFor(work);
     const sequence = this.#trace.filter((event) => event.workId === workId && event.type === "context.assembled").length + 1;
@@ -143,6 +142,7 @@ export class AiricRuntime {
       return result;
     } finally {
       this.#controllers.delete(workId);
+      this.#turnRevisions.delete(workId);
     }
   }
 
@@ -224,7 +224,7 @@ export class AiricRuntime {
     rationale: string;
     evidenceEventIds: readonly string[];
     validation?: unknown;
-  }): Promise<{ digest: string; size: number }> {
+  }): Promise<{ proposalId: string; candidateDigest: string }> {
     const work = this.#requireOpenWork(workId);
     const definition = await this.#definitionFor(work);
     if (!definition.manifest.documents.some((document) => document.role === "reflection")) throw new Error("Candidate creation requires a Reflection Work Definition");
@@ -232,50 +232,23 @@ export class AiricRuntime {
     if (bound && (candidate.target?.moduleId !== bound.moduleId || candidate.target?.workTypeId !== bound.workTypeId || candidate.targetPath !== bound.path || candidate.baseContentDigest !== bound.baseContentDigest)) {
       throw new Error("ReflectionCandidateTargetMismatch");
     }
-    const object = await this.options.store.putObject(new TextEncoder().encode(candidate.diff));
-    await this.#traceEvent(workId, "reflection.candidate", "agent", { ...candidate, diff: undefined, object });
-    return object;
-  }
-
-  async readReflectionCandidate(workId: string, candidateDigest: string): Promise<{ candidate: Record<string, unknown>; diff: string }> {
-    this.#requireWork(workId);
-    const event = this.getTrace(workId).find((item) => item.type === "reflection.candidate" && (item.payload as { object?: { digest?: string } }).object?.digest === candidateDigest);
-    if (!event) throw new Error("Reflection candidate does not belong to this Work");
-    const payload = event.payload as Record<string, unknown>;
-    return { candidate: payload, diff: new TextDecoder().decode(await this.options.store.getObject(candidateDigest)) };
-  }
-
-  async recordReflectionOutcome(workId: string, outcome: { candidateDigest: string; decision: "adopted" | "rejected"; reviewer: string; validation?: unknown }): Promise<void> {
-    this.#requireWork(workId);
-    const candidate = this.getTrace(workId).find((event) => event.type === "reflection.candidate" && (event.payload as { object?: { digest?: string } }).object?.digest === outcome.candidateDigest);
-    if (!candidate) throw new Error("Reflection outcome must reference a candidate from the same Work");
-    if (outcome.decision === "rejected") {
-      await this.#traceEvent(workId, "reflection.rejected", outcome.reviewer, outcome);
-      return;
-    }
-    const payload = candidate.payload as {
-      targetKind?: string; targetPath?: string; target?: { moduleId?: string; workTypeId?: string };
-      baseCommit?: string; baseContentDigest?: string; validation?: unknown;
-    };
-    if (payload.targetKind !== "operating-model") throw new Error("Domain and Experience suggestions must be handed to Module Smith");
-    if (!payload.target?.moduleId || !payload.target.workTypeId || !payload.targetPath || !payload.baseContentDigest) throw new Error("Operating Model candidate is missing its bound target or base digest");
-    const port = this.options.operatingModelChanges;
-    if (!port) throw new OperatingModelChangeNotConfigured();
-    const applied = await port.apply({
-      candidateDigest: outcome.candidateDigest,
-      target: { moduleId: payload.target.moduleId, workTypeId: payload.target.workTypeId, path: payload.targetPath },
-      base: { contentDigest: payload.baseContentDigest, ...(payload.baseCommit ? { gitHead: payload.baseCommit } : {}) },
-      reviewer: outcome.reviewer,
-      validation: outcome.validation ?? payload.validation ?? {},
+    if (!candidate.target?.moduleId || !candidate.target.workTypeId) throw new Error("Operating Model candidate is missing its target");
+    const port = this.options.operatingModelLearning;
+    if (!port) throw new Error("OperatingModelLearningNotConfigured");
+    const result = await port.proposeFromReflection({
+      operationId: `reflection:${workId}:${hash(candidate.diff)}`,
+      sourceWorkId: workId,
+      target: candidate.target,
+      baseRevision: { revisionId: candidate.baseCommit ?? candidate.baseContentDigest, contentDigest: candidate.baseContentDigest },
+      patch: candidate.diff,
+      rationale: candidate.rationale,
+      evidenceRefs: candidate.evidenceEventIds.map((eventId) => ({ workId, eventId })),
+      validationPlan: candidate.validation ?? {},
+      proposerId: "agent",
     });
-    await this.#traceEvent(workId, "reflection.adopted", outcome.reviewer, {
-      candidateDigest: outcome.candidateDigest,
-      reviewer: outcome.reviewer,
-      target: { moduleId: payload.target.moduleId, workTypeId: payload.target.workTypeId, path: payload.targetPath },
-      base: { contentDigest: payload.baseContentDigest, ...(payload.baseCommit ? { gitHead: payload.baseCommit } : {}) },
-      appliedRef: applied.appliedRef,
-      validationEvidence: applied.validationEvidence,
-    });
+    if (result.status !== "committed" || !("proposalId" in result.result) || !("candidateDigest" in result.result)) throw new Error(result.status === "rejected" ? result.error.message : "Operating Model proposal outcome is unknown");
+    await this.#traceEvent(workId, "reflection.proposed", "agent", { proposalId: result.result.proposalId, candidateDigest: result.result.candidateDigest, evidenceEventIds: candidate.evidenceEventIds });
+    return { proposalId: result.result.proposalId, candidateDigest: result.result.candidateDigest };
   }
 
   async attachEvidence(workId: string, input: { name: string; mediaType: string; content: Uint8Array }): Promise<{ digest: string; size: number; extraction?: { digest: string; blocks: number; warnings: readonly string[] } }> {
@@ -402,16 +375,22 @@ export class AiricRuntime {
     if (this.options.authorizeWork && !await this.options.authorizeWork(actor, work, action)) throw new Error("WorkAccessDenied");
   }
   #domainsFor(work: Work): DomainProvider[] { const resolved = this.options.modules.resolve(work.workType).domains; return work.domainBindings.map((binding) => resolved.find((module) => module.id === binding.id) ?? fail(`Domain ${binding.id} is not available to ${work.workType.moduleId}/${work.workType.workTypeId}`)); }
-  async #definitionFor(work: Work): Promise<WorkDefinition> { const resolved = this.options.modules.resolve(work.workType); return loadWorkDefinition(this.options.modules.source, { ...work.workType, packagePath: resolved.packagePath }); }
+  async #definitionFor(work: Work): Promise<WorkDefinition> {
+    this.options.modules.resolve(work.workType);
+    const target = work.workType;
+    const ref = this.#turnRevisions.get(work.id) ?? await this.options.operatingModels.resolveActive(target);
+    return loadWorkDefinition(await this.options.operatingModels.readRevision(target, ref));
+  }
   async #assembleAndTrace(work: Work, domains: readonly DomainProvider[], sequence: number, reason?: string, turnContextRefs?: readonly TurnContextRef[]): Promise<{ definition: WorkDefinition; envelope: ReturnType<typeof assembleContext> }> {
     const definition = await this.#definitionFor(work);
+    const operatingModelRevision = this.#turnRevisions.get(work.id) ?? await this.options.operatingModels.resolveActive(work.workType);
     const allowed = new Set(definition.manifest.capabilities.allowed);
     const authorizedDomains = domains.map((domain) => ({ ...domain, capabilities: domain.capabilities.filter((capability) => allowed.has(capability.id)) }));
     const envelope = assembleContext({ work, definition, domains: authorizedDomains, sequence, ...(turnContextRefs === undefined ? {} : { turnContextRefs }) });
     const previous = this.getTrace(work.id).filter((event) => event.type === "context.assembled").at(-1);
-    const previousDigest = (previous?.payload as { workType?: { operatingDigest?: string } } | undefined)?.workType?.operatingDigest;
-    if (previousDigest && previousDigest !== definition.digest) {
-      await this.#traceEvent(work.id, "context.operating-model-changed", "runtime", { fromDigest: previousDigest, toDigest: definition.digest, ...definition.source });
+    const previousRevision = (previous?.payload as { operatingModelRevision?: OperatingModelRevisionRef } | undefined)?.operatingModelRevision;
+    if (previousRevision && (previousRevision.revisionId !== operatingModelRevision.revisionId || previousRevision.contentDigest !== operatingModelRevision.contentDigest)) {
+      await this.#traceEvent(work.id, "context.operating-model-changed", "runtime", { previous: previousRevision, current: operatingModelRevision });
     }
     const evidence = [];
     for (const block of envelope.instructions) {
@@ -420,7 +399,7 @@ export class AiricRuntime {
     }
     await this.#traceEvent(work.id, "context.assembled", "runtime", {
       envelopeId: envelope.envelopeId, digest: envelope.digest, workType: envelope.workType,
-      sources: envelope.provenance, availableCapabilities: envelope.availableCapabilities, evidence, ...(reason ? { reason } : {}), ...(turnContextRefs?.length ? { turnContextRefs } : {}),
+      sources: envelope.provenance, availableCapabilities: envelope.availableCapabilities, evidence, operatingModelRevision, ...(reason ? { reason } : {}), ...(turnContextRefs?.length ? { turnContextRefs } : {}),
     });
     return { definition, envelope };
   }

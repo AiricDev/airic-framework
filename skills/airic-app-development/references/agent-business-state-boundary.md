@@ -14,9 +14,11 @@ a cognitive projection, reflection, or an Operating Model change path.
 - Let WorkType Operating Models teach cognitive-context-first reasoning followed
   by narrowly scoped structured reads and expected-revision commands. They may
   evolve faster than the Domain.
-- Reflection creates evidence-linked candidate diffs only. An application that
-  wants adoption wires `OperatingModelChangePort`; without that adapter, show
-  review/download/reject and surface `OperatingModelChangeNotConfigured`.
+- Reflection creates evidence-linked proposals only through
+  `OperatingModelLearningPort`. Give the Agent Runtime only
+  `OperatingModelRuntimePort`, and give trusted human governance the separate
+  `OperatingModelGovernancePort`; adoption is a reviewed CAS operation, never a
+  Runtime-side effect.
 
 For the architecture rationale, read
 [`docs/agent-business-state-boundary.md`](../../../docs/agent-business-state-boundary.md).

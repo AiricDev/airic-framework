@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { expect, it } from "vitest";
 import { AiricRuntime, ModuleRegistry } from "@airic/framework";
-import { MemoryModuleSource, MemoryRuntimeStore } from "@airic/testing";
+import { MemoryModuleSource, MemoryOperatingModelRepository, MemoryRuntimeStore } from "@airic/testing";
 import { PiHarness } from "../src/index.js";
 
 const real = process.env.AIRIC_REAL_PI_SMOKE === "1";
@@ -24,7 +24,7 @@ const real = process.env.AIRIC_REAL_PI_SMOKE === "1";
     ...(process.env.AIRIC_API_ENDPOINT ? { endpoint: process.env.AIRIC_API_ENDPOINT } : {}),
     apiKeys: { [provider]: key },
   });
-  const runtime = new AiricRuntime({ modules, harness, store: new MemoryRuntimeStore() });
+  const runtime = new AiricRuntime({ modules, harness, store: new MemoryRuntimeStore(), operatingModels: new MemoryOperatingModelRepository(source.definitions) });
   await runtime.open();
   let deltas = 0;
   const off = runtime.subscribeLive((event) => { if (event.type === "text-delta") deltas += 1; });
@@ -56,7 +56,7 @@ const real = process.env.AIRIC_REAL_PI_SMOKE === "1";
     apiKeys: { [provider]: key },
     workspace: { root: scratch, grants: [{ moduleId: "report-types", workTypeId: "report-type-maintenance", read: ["src/modules"], write: ["src/modules"], target: { root: "src/modules", inputKey: "targetModuleId" }, checks: [{ id: "smoke", title: "temporary file content", command: process.execPath, args: ["-e", "const fs=require('fs');if(fs.readFileSync('src/modules/smoke-report/operating/process.md','utf8')!=='AIRIC_PI_FILE_SMOKE_OK\\n')process.exit(1)"], requiredChangeRoots: ["src/modules/smoke-report"] }] }] },
   });
-  const runtime = new AiricRuntime({ modules, harness, store: new MemoryRuntimeStore() }); await runtime.open();
+  const runtime = new AiricRuntime({ modules, harness, store: new MemoryRuntimeStore(), operatingModels: new MemoryOperatingModelRepository(source.definitions) }); await runtime.open();
   try {
     const work = await runtime.createWork({ moduleId: "report-types", workTypeId: "report-type-maintenance", objective: "Create one controlled smoke file and validate it", input: { targetModuleId: "smoke-report" } }, { id: "smoke-operator", scopes: [] });
     await runtime.sendMessage(work.id, "Follow the process exactly: write the temporary file, run workspace_check_smoke, then workspace_changes. Do not stop after text.", { id: "smoke-operator", scopes: [] });

@@ -1,10 +1,11 @@
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { AiricRuntime, ModuleRegistry } from "@airic/framework";
 import { createAiricAcpGateway } from "@airic/acp";
 import { PiHarness, readWorkspaceStatus } from "@airic/harness-pi";
 import { createAiricHttpHandler, createStaticHandler, type AiricAccessPolicy } from "@airic/server";
-import { DirectoryModuleSource, FileRuntimeStore } from "@airic/storage-files";
+import { DirectoryModuleSource, FileRuntimeStore, GitOperatingModelRepository } from "@airic/storage-files";
 import { createAppHttpHandler, sendJson, type AppRoute } from "./app/application-handler.js";
 import { resolveActor } from "./app/actor.js";
 import { DemoHarness } from "./app/demo-harness.js";
@@ -16,6 +17,14 @@ const data = configuredData.endsWith("/v2") ? configuredData : resolve(configure
 const source = new DirectoryModuleSource(resolve(root, "src/modules"), { gitRoot: root });
 const modules = new ModuleRegistry(source);
 await modules.load();
+const operatingModels = new GitOperatingModelRepository(root);
+for (const module of modules.list()) for (const workType of module.workTypes) {
+  const resolved = modules.resolve({ moduleId: module.id, workTypeId: workType.id });
+  const exported = await source.exportFiles({ moduleId: module.id, workTypeId: workType.id, packagePath: resolved.packagePath });
+  const contentDigest = createHash("sha256").update(JSON.stringify(exported.files)).digest("hex");
+  const sourceStatus = await source.status();
+  await operatingModels.bootstrap({ target: { moduleId: module.id, workTypeId: workType.id }, ref: { revisionId: `baseline:${contentDigest.slice(0, 16)}`, contentDigest }, manifest: exported.files["work.yml"]!, documents: Object.entries(exported.files).map(([path, content]) => ({ path, content, digest: createHash("sha256").update(content).digest("hex") })), ...(sourceStatus.gitHead ? { sourceRef: sourceStatus.gitHead } : {}) });
+}
 const installed = await loadServerModules({ root, data, registry: modules });
 for (const item of installed) if (item.contribution?.domain) modules.registerDomain(item.contribution.domain);
 
@@ -44,6 +53,7 @@ const harness = process.env.AIRIC_HARNESS === "pi"
 // and this policy together before exposing an application to other users.
 const authorize: AiricAccessPolicy = (actor, resource) => resource.kind !== "work" || Boolean(resource.work.createdBy && resource.work.createdBy === actor.id);
 const runtime = new AiricRuntime({ store: new FileRuntimeStore({ directory: resolve(data, "runtime") }), harness, modules,
+  operatingModels, operatingModelLearning: operatingModels,
   authorizeWork: (actor, work) => authorize(actor, { kind: "work", work, action: "prompt" }),
 });
 await runtime.open();
@@ -54,8 +64,9 @@ const routes: AppRoute[] = [{ method: "GET", path: "/health", handle: async () =
 const application = createAppHttpHandler({ routes, authenticate: resolveActor });
 const airic = createAiricHttpHandler({
   runtime, basePath: "/api/airic", authenticate: resolveActor, authorize, agentConnection: acp.connection,
+  operatingModelRuntime: operatingModels, operatingModelGovernance: operatingModels,
   workTypes: async () => Promise.all(modules.list().flatMap((module) => module.workTypes.map(async (workType) => { const loaded = await runtime.loadDefinition(module.id, workType.id); return { moduleId: module.id, workTypeId: workType.id, title: loaded.manifest.title, digest: loaded.digest }; }))),
-  getWorkType: (moduleId, workTypeId) => { const resolved = modules.resolve({ moduleId, workTypeId }); return source.exportFiles({ moduleId, workTypeId, packagePath: resolved.packagePath }); },
+  getWorkType: async (moduleId, workTypeId) => { const target = { moduleId, workTypeId }; const snapshot = await operatingModels.readRevision(target, await operatingModels.resolveActive(target)); return { digest: snapshot.ref.contentDigest, files: Object.fromEntries(snapshot.documents.map((document) => [document.path, document.content])) }; },
   workspaceStatus: () => readWorkspaceStatus(root),
 });
 const files = createStaticHandler({ directory: resolve(root, "dist/public") });

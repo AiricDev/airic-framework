@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { AiricRuntime, DomainInvocationError, ModuleRegistry, OperatingModelChangeNotConfigured, type CommandInspection, type DomainProvider } from "@airic/framework";
-import { FakeHarness, MemoryModuleSource, MemoryRuntimeStore } from "@airic/testing";
+import { AiricRuntime, DomainInvocationError, ModuleRegistry, type CommandInspection, type DomainProvider } from "@airic/framework";
+import { FakeHarness, MemoryModuleSource, MemoryOperatingModelRepository, MemoryRuntimeStore } from "@airic/testing";
 const creator = { id: "user", scopes: [] };
 
 const manifest = {
@@ -51,11 +51,12 @@ function fixture(commandMode: "committed" | "rejected" | "unknown" = "committed"
   modules.registerManifest(moduleManifests.cases);
   modules.registerManifest(moduleManifests.development);
   modules.registerDomain(domain);
+  const operatingModels = new MemoryOperatingModelRepository(definitions.definitions);
   const runtime = new AiricRuntime({
     store: new MemoryRuntimeStore(), harness,
-    modules,
+    modules, operatingModels, operatingModelLearning: operatingModels,
   });
-  return { runtime, harness, definitions, domain, modules, commandInvocations: () => commandInvocations };
+  return { runtime, harness, definitions, domain, modules, operatingModels, commandInvocations: () => commandInvocations };
 }
 
 describe("AiricRuntime", () => {
@@ -144,12 +145,12 @@ describe("AiricRuntime", () => {
     expect(runtime.getTrace(work.id).some((event) => event.type === "context.retrieved")).toBe(true);
   });
 
-  it("reloads a changed operating model for the next turn and preserves delivered content as evidence", async () => {
-    const { runtime, harness, definitions } = fixture(); await runtime.open();
+  it("reloads an adopted operating model for the next turn and preserves delivered content as evidence", async () => {
+    const { runtime, harness, operatingModels } = fixture(); await runtime.open();
     const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Follow live guidance" }, creator);
     harness.enqueue({ text: "First" });
     await runtime.sendMessage(work.id, "Begin", { id: "user", scopes: [] });
-    definitions.definitions["cases/assist"]!.documents["process.md"] = "Follow the revised objective.";
+    await operatingModels.replaceActiveForTest({ moduleId: "cases", workTypeId: "assist" }, { "process.md": "Follow the revised objective." });
     harness.enqueue({ text: "Second" });
     await runtime.sendMessage(work.id, "Continue", { id: "user", scopes: [] });
     expect(harness.envelopes.at(-1)?.instructions[0]?.content).toBe("Follow the revised objective.");
@@ -168,17 +169,13 @@ describe("AiricRuntime", () => {
     expect(runtime.getTrace(work.id).some((event) => event.type === "message.agent")).toBe(false);
   });
 
-  it("stores reflection candidates as content-addressed evidence, not entities", async () => {
+  it("submits reflection candidates to the learning port and traces only the proposal linkage", async () => {
     const { runtime } = fixture(); await runtime.open();
     const work = await runtime.createWork({ moduleId: "development", workTypeId: "reflection", objective: "Reflect" }, creator);
     const definition = await runtime.loadDefinition("development", "reflection");
     const object = await runtime.recordReflectionCandidate(work.id, { targetKind: "operating-model", targetPath: "process.md", target: { moduleId: "cases", workTypeId: "assist" }, baseContentDigest: definition.digest, diff: "+Clarify alternate order", rationale: "Trace showed hesitation", evidenceEventIds: [] });
-    expect(object.digest).toHaveLength(64);
-    expect(runtime.getTrace(work.id).at(-1)?.type).toBe("reflection.candidate");
-    expect(await runtime.readReflectionCandidate(work.id, object.digest)).toMatchObject({ diff: "+Clarify alternate order", candidate: { targetPath: "process.md" } });
-    await expect(runtime.recordReflectionOutcome(work.id, { candidateDigest: object.digest, decision: "adopted", reviewer: "reviewer", validation: { check: "passed" } })).rejects.toBeInstanceOf(OperatingModelChangeNotConfigured);
-    expect(runtime.getTrace(work.id).some((event) => event.type === "reflection.adopted")).toBe(false);
-    await expect(runtime.readReflectionCandidate(work.id, "f".repeat(64))).rejects.toThrow("does not belong");
+    expect(object.candidateDigest).toHaveLength(64);
+    expect(runtime.getTrace(work.id).at(-1)?.type).toBe("reflection.proposed");
   });
 
   it("does not let a rejected Command satisfy Work completion", async () => {
@@ -270,16 +267,12 @@ describe("AiricRuntime", () => {
     const { runtime, domain, harness } = fixture(); await runtime.open();
     const source = await runtime.createWork({ moduleId: "development", workTypeId: "reflection", objective: "Find a domain improvement" }, creator);
     const candidate = await runtime.recordReflectionCandidate(source.id, { targetKind: "operating-model", targetPath: "process.md", target: { moduleId: "cases", workTypeId: "assist" }, baseContentDigest: domain.sourceBundle.digest, diff: "+Document the invariant reason", rationale: "Improve Agent guidance", evidenceEventIds: [] });
-    runtime.options.operatingModelChanges = { apply: async (input) => {
-      expect(input).toMatchObject({ candidateDigest: candidate.digest, target: { moduleId: "cases", workTypeId: "assist", path: "process.md" }, reviewer: "architect" });
-      return { appliedRef: { kind: "git-commit", id: "cases/assist", version: "abc" }, validationEvidence: { tests: "passed" } };
-    } };
-    await runtime.recordReflectionOutcome(source.id, { candidateDigest: candidate.digest, decision: "adopted", reviewer: "architect", validation: { tests: "requested" } });
+    expect(candidate.candidateDigest).toHaveLength(64);
     expect(runtime.getWork(source.id)?.domainBindings).toEqual([]);
     const bound = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Use the bound release" }, creator);
     (domain as { buildId: string }).buildId = "build-2";
     harness.enqueue({ call: { tool: "domain_case_get", input: {}, requestId: "read-after-build-change" } });
     await expect(runtime.sendMessage(bound.id, "Read", { id: "user", scopes: [] })).rejects.toThrow("BindingChanged");
-    expect(runtime.getTrace(source.id).some((event) => event.type === "reflection.adopted")).toBe(true);
+    expect(runtime.getTrace(source.id).some((event) => event.type === "reflection.proposed")).toBe(true);
   });
 });

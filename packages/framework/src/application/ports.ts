@@ -1,7 +1,6 @@
 import type { Action } from "../domain/action.js";
 import type { Work } from "../domain/work.js";
 import type { ContextEnvelope } from "./context.js";
-import type { WorkTypeRef } from "../domain/work.js";
 
 export interface TraceEvent {
   schemaVersion: 1;
@@ -81,29 +80,7 @@ export interface AgentHarness {
   currentWorkspaceChangeSet?(workId: string): Promise<string | undefined>;
 }
 
-export interface WorkTypeSource {
+export interface ModuleSource {
   listModules(): Promise<readonly string[]>;
   readModuleManifest(moduleId: string): Promise<unknown>;
-  readManifest(ref: WorkTypeRef & { packagePath: string }): Promise<unknown>;
-  readDocument(ref: WorkTypeRef & { packagePath: string }, path: string): Promise<string>;
-  listWorkTypeFiles(ref: WorkTypeRef & { packagePath: string }): Promise<readonly string[]>;
-  status?(): Promise<{ gitHead?: string; dirty: boolean }>;
-}
-
-/**
- * Application-owned change management for an already reviewed Operating Model
- * candidate.  The Framework deliberately does not prescribe asset storage,
- * approval workflow, publishing, or runtime activation.
- */
-export interface OperatingModelChangePort {
-  apply(input: {
-    candidateDigest: string;
-    target: { moduleId: string; workTypeId: string; path: string };
-    base: { contentDigest: string; gitHead?: string };
-    reviewer: string;
-    validation: unknown;
-  }): Promise<{
-    appliedRef: { kind: "git-commit" | "domain-release"; id: string; version: string };
-    validationEvidence: unknown;
-  }>;
 }

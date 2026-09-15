@@ -2,12 +2,13 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, resolve, sep } from "node:path";
-import { OperatingModelChangeNotConfigured, type AiricRuntime, type CreateWorkInput, type TraceEvent, type TrustedCallContext, type Work, type WorkTypeRef } from "@airic/framework";
+import { type AiricRuntime, type CreateWorkInput, type OperatingModelGovernancePort, type OperatingModelId, type OperatingModelRuntimePort, type TraceEvent, type TrustedCallContext, type Work, type WorkTypeRef } from "@airic/framework";
 
 export type AiricAccessResource =
   | { kind: "work"; work: Work; action: "read" | "prompt" | "complete" | "interrupt" | "reflect" | "upload" }
   | { kind: "create"; input: CreateWorkInput }
   | { kind: "work-type"; ref: WorkTypeRef }
+  | { kind: "operating-model"; target?: OperatingModelId; action: "runtime-read" | "reflection-propose" | "human-governance" }
   | { kind: "workspace" }
   | { kind: "capabilities" }
   | { kind: "upload" };
@@ -20,6 +21,8 @@ export interface AiricHttpHandlerOptions {
   basePath?: string;
   workTypes?: () => Promise<readonly { moduleId: string; workTypeId: string; title: string; digest: string }[]>;
   getWorkType?: (moduleId: string, workTypeId: string) => Promise<{ digest: string; files: Readonly<Record<string, string>> }>;
+  operatingModelRuntime?: OperatingModelRuntimePort;
+  operatingModelGovernance?: OperatingModelGovernancePort;
   workspaceStatus?: () => Promise<{ gitHead?: string; dirty: boolean; status: string; diff: string }>;
   saveUpload?: (input: { name: string; mediaType: string; contentBase64: string }) => Promise<{ ref: unknown }>;
   authenticate?: (request: IncomingMessage) => Promise<TrustedCallContext["actor"]>;
@@ -99,20 +102,20 @@ export function createAiricHttpHandler(options: AiricHttpHandlerOptions): AiricH
         if (path === "/works" && request.method === "POST") { const input = await bodyJson(request) as CreateWorkInput; await requireAccess(options, actor, { kind: "create", input }); return json(response, 201, await options.runtime.createWork(input, actor)); }
         if (path === "/capabilities" && request.method === "GET") { await requireAccess(options, actor, { kind: "capabilities" }); return json(response, 200, options.runtime.options.harness.capabilities()); }
         if (path === "/workspace" && request.method === "GET") { await requireAccess(options, actor, { kind: "workspace" }); return options.workspaceStatus ? json(response, 200, await options.workspaceStatus()) : json(response, 501, { error: "Workspace status is not configured", code: "NotConfigured" }); }
+        if (path === "/operating-models" && request.method === "GET") { await requireAccess(options, actor, { kind: "operating-model", action: "runtime-read" }); return options.operatingModelRuntime ? json(response, 200, await options.operatingModelRuntime.listAvailableModels()) : json(response, 501, { error: "Operating Model repository is not configured", code: "NotConfigured" }); }
+        const operatingModelMatch = path.match(/^\/operating-models\/([^/]+)\/([^/]+)\/(active|revisions\/([^/]+))$/u);
+        if (operatingModelMatch && request.method === "GET") { const target = { moduleId: decodeURIComponent(operatingModelMatch[1]!), workTypeId: decodeURIComponent(operatingModelMatch[2]!) }; await requireAccess(options, actor, { kind: "operating-model", target, action: "runtime-read" }); if (!options.operatingModelRuntime) return json(response, 501, { error: "Operating Model repository is not configured", code: "NotConfigured" }); const ref = operatingModelMatch[3] === "active" ? await options.operatingModelRuntime.resolveActive(target) : { revisionId: decodeURIComponent(operatingModelMatch[4]!), contentDigest: url.searchParams.get("contentDigest") ?? "" }; return json(response, 200, await options.operatingModelRuntime.readRevision(target, ref)); }
+        if (path === "/operating-model-proposals" && request.method === "GET") { await requireAccess(options, actor, { kind: "operating-model", action: "human-governance" }); return options.operatingModelGovernance ? json(response, 200, await options.operatingModelGovernance.listProposals()) : json(response, 501, { error: "Operating Model governance is not configured", code: "NotConfigured" }); }
+        if (path === "/operating-model-proposals" && request.method === "POST") { await requireAccess(options, actor, { kind: "operating-model", action: "human-governance" }); if (!options.operatingModelGovernance) return json(response, 501, { error: "Operating Model governance is not configured", code: "NotConfigured" }); const body = await bodyJson(request) as Record<string, unknown>; return json(response, 201, await options.operatingModelGovernance.propose({ ...body, proposer: { kind: "human", id: actor.id } } as never)); }
+        const proposalMatch = path.match(/^\/operating-model-proposals\/([^/]+)(?:\/(review|reject|adopt))?$/u);
+        if (proposalMatch && options.operatingModelGovernance) { await requireAccess(options, actor, { kind: "operating-model", action: "human-governance" }); const proposalId = decodeURIComponent(proposalMatch[1]!); if (!proposalMatch[2] && request.method === "GET") return json(response, 200, await options.operatingModelGovernance.getProposal(proposalId)); if (request.method === "POST") { const body = await bodyJson(request) as Record<string, unknown>; const operation = proposalMatch[2]!; if (operation === "review") return json(response, 201, await options.operatingModelGovernance.review({ ...body, proposalId, reviewer: actor.id } as never)); if (operation === "reject") return json(response, 201, await options.operatingModelGovernance.reject({ ...body, proposalId, reviewer: actor.id } as never)); if (operation === "adopt") return json(response, 201, await options.operatingModelGovernance.adopt({ ...body, proposalId, reviewer: actor.id } as never)); } }
+        const operationMatch = path.match(/^\/operating-model-operations\/([^/]+)$/u);
+        if (operationMatch && request.method === "GET") { await requireAccess(options, actor, { kind: "operating-model", action: "human-governance" }); return options.operatingModelGovernance ? json(response, 200, await options.operatingModelGovernance.inspectOperation(decodeURIComponent(operationMatch[1]!))) : json(response, 501, { error: "Operating Model governance is not configured", code: "NotConfigured" }); }
         if (path === "/work-types" && request.method === "GET") { const all = await options.workTypes?.() ?? []; return json(response, 200, (await Promise.all(all.map(async (item) => await allowed(options, actor, { kind: "work-type", ref: item }) ? item : undefined))).filter(Boolean)); }
         const workTypeMatch = path.match(/^\/work-types\/([^/]+)\/([^/]+)$/u);
         if (workTypeMatch && request.method === "GET") { const ref = { moduleId: decodeURIComponent(workTypeMatch[1]!), workTypeId: decodeURIComponent(workTypeMatch[2]!) }; await requireAccess(options, actor, { kind: "work-type", ref }); return options.getWorkType ? json(response, 200, await options.getWorkType(ref.moduleId, ref.workTypeId)) : json(response, 501, { error: "WorkType reading is not configured", code: "NotConfigured" }); }
-        const reflectionCandidateMatch = path.match(/^\/works\/([^/]+)\/reflection-candidates\/([a-f0-9]{64})$/u);
-        if (reflectionCandidateMatch && request.method === "GET") {
-          const workId = decodeURIComponent(reflectionCandidateMatch[1]!);
-          const work = options.runtime.getWork(workId);
-          if (!work) throw new AiricHttpError(404, "WorkNotFound", "Work not found");
-          await requireAccess(options, actor, { kind: "work", work, action: "reflect" });
-          await options.onTraceRead?.(actor, work, "http");
-          return json(response, 200, await options.runtime.readReflectionCandidate(workId, reflectionCandidateMatch[2]!));
-        }
         if (path === "/uploads" && request.method === "POST") { await requireAccess(options, actor, { kind: "upload" }); return options.saveUpload ? json(response, 201, await options.saveUpload(await bodyJson(request) as never)) : json(response, 501, { error: "Uploads are not configured", code: "NotConfigured" }); }
-        const match = path.match(/^\/works\/([^/]+)(?:\/(trace|messages|complete|interrupt|reflection|reflection-outcome|uploads|agent-connection))?$/u);
+        const match = path.match(/^\/works\/([^/]+)(?:\/(trace|messages|complete|interrupt|reflection|uploads|agent-connection))?$/u);
         if (match) {
           const workId = decodeURIComponent(match[1]!); const operation = match[2];
           const work = options.runtime.getWork(workId);
@@ -126,7 +129,6 @@ export function createAiricHttpHandler(options: AiricHttpHandlerOptions): AiricH
           if (operation === "complete" && request.method === "POST") return json(response, 200, await options.runtime.completeWork(workId, (await bodyJson(request) as { result: unknown }).result));
           if (operation === "interrupt" && request.method === "POST") { await options.runtime.interrupt(workId); return json(response, 202, { interrupted: true }); }
           if (operation === "reflection" && request.method === "POST") return json(response, 201, await options.runtime.recordReflectionCandidate(workId, await bodyJson(request) as never));
-          if (operation === "reflection-outcome" && request.method === "POST") { const body = await bodyJson(request) as Record<string, unknown>; await options.runtime.recordReflectionOutcome(workId, { ...body, reviewer: actor.id } as never); return json(response, 201, { recorded: true }); }
           if (operation === "uploads" && request.method === "POST") { const body = await bodyJson(request) as { name: string; mediaType: string; contentBase64: string }; return json(response, 201, await options.runtime.attachEvidence(workId, { name: body.name, mediaType: body.mediaType, content: Buffer.from(body.contentBase64, "base64") })); }
           if (operation === "uploads" && request.method === "PUT") {
             const encodedName = request.headers["x-airic-filename"];
@@ -140,7 +142,7 @@ export function createAiricHttpHandler(options: AiricHttpHandlerOptions): AiricH
           }
         }
         return json(response, 404, { error: "Airic route not found", code: "RouteNotFound" });
-      } catch (error) { return json(response, error instanceof AiricHttpError ? error.status : error instanceof OperatingModelChangeNotConfigured ? 501 : error instanceof SyntaxError ? 400 : error instanceof Error && error.message.startsWith("WorkBusy:") ? 409 : 400, { error: error instanceof Error ? error.message : String(error), code: error instanceof AiricHttpError ? error.code : error instanceof OperatingModelChangeNotConfigured ? error.code : error instanceof SyntaxError ? "InvalidJson" : error instanceof Error && error.message.startsWith("WorkBusy:") ? "WorkBusy" : "RequestFailed" }); }
+      } catch (error) { return json(response, error instanceof AiricHttpError ? error.status : error instanceof SyntaxError ? 400 : error instanceof Error && error.message.startsWith("WorkBusy:") ? 409 : 400, { error: error instanceof Error ? error.message : String(error), code: error instanceof AiricHttpError ? error.code : error instanceof SyntaxError ? "InvalidJson" : error instanceof Error && error.message.startsWith("WorkBusy:") ? "WorkBusy" : "RequestFailed" }); }
     },
     async close() { if (closed) return; closed = true; unsubscribe(); for (const client of clients) client.response.end(); clients.clear(); },
   };

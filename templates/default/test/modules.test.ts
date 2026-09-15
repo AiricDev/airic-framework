@@ -11,7 +11,7 @@ describe("application modules", () => {
     const refs = registry.list().flatMap((module) => module.workTypes.map((workType) => ({ moduleId: module.id, workTypeId: workType.id })));
     expect(refs).toEqual(expect.arrayContaining([{ moduleId: "cases", workTypeId: "case-assistance" }, { moduleId: "development", workTypeId: "module-smith" }, { moduleId: "development", workTypeId: "reflection" }]));
     const { loadWorkDefinition } = await import("@airic/framework");
-    for (const ref of refs) { const packagePath = registry.manifest(ref.moduleId).workTypes.find((item) => item.id === ref.workTypeId)!.path; expect((await loadWorkDefinition(source, { ...ref, packagePath })).manifest.id).toBe(ref.workTypeId); }
+    for (const ref of refs) { const packagePath = registry.manifest(ref.moduleId).workTypes.find((item) => item.id === ref.workTypeId)!.path; const exported = await source.exportFiles({ ...ref, packagePath }); expect((await loadWorkDefinition({ target: ref, ref: { revisionId: `working:${exported.digest.slice(0, 12)}`, contentDigest: exported.digest }, manifest: exported.files["work.yml"]!, documents: Object.entries(exported.files).map(([path, content]) => ({ path, content, digest: content })) })).manifest.id).toBe(ref.workTypeId); }
   });
 
   it("rejects services from modules that were not declared as Domain imports", () => {

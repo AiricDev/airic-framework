@@ -21,13 +21,14 @@ export class DemoHarness implements AgentHarness {
       const saveCandidate = requireTool(input.tools, "airic_record_reflection_candidate");
       const complete = requireTool(input.tools, "airic_complete_work");
       const events = await readTrace.invoke({ workId: workInput.input.sourceWorkId, reason: "Identify whether the operating model was delivered before domain rejection" }, this.#next()) as { eventId: string; type: string; payload: unknown }[];
-      const context = [...events].reverse().find((event) => event.type === "context.assembled")?.payload as { workType?: { gitHead?: string; operatingDigest?: string } } | undefined;
+      const context = [...events].reverse().find((event) => event.type === "context.assembled")?.payload as { operatingModelRevision?: { revisionId: string; contentDigest: string } } | undefined;
       const candidate = {
         targetKind: "operating-model",
-        targetPath: "case-assistance/process.md",
-        baseCommit: context?.workType?.gitHead,
-        baseContentDigest: context?.workType?.operatingDigest ?? "unknown",
-        diff: "+ When the customer asks to submit early, name each missing fact before retrying readiness.",
+        targetPath: "process.md",
+        target: { moduleId: "cases", workTypeId: "case-assistance" },
+        baseCommit: context?.operatingModelRevision?.revisionId,
+        baseContentDigest: context?.operatingModelRevision?.contentDigest ?? "unknown",
+        diff: JSON.stringify({ documents: { "process.md": "Read the case before any update. Ask for the customer name and email in either order. When a customer asks to submit early, name each missing fact before retrying readiness. Never claim ready until the Domain command commits." } }),
         rationale: "The trace includes a domain rejection and the candidate makes the recovery guidance explicit without relaxing the invariant.",
         evidenceEventIds: events.filter((event) => event.type === "action.rejected" || event.type === "context.delivered").map((event) => event.eventId),
       } as const;

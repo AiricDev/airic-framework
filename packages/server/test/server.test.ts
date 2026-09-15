@@ -52,12 +52,11 @@ describe("Airic HTTP hosting", () => {
     expect(connection.status).toBe(501);
     await airic.close();
   });
-  it("serves a Reflection candidate only to an actor allowed to reflect on its Work", async () => {
-    const runtime = fakeRuntime({ getWork: () => testWork, readReflectionCandidate: async () => ({ candidate: { targetPath: "operating/process.md" }, diff: "+clarify" }) });
-    const airic = createAiricHttpHandler({ runtime, authenticate: authenticated, authorize: (_actor, resource) => resource.kind === "work" && resource.action === "reflect" });
+  it("serves governance operations only through the dedicated Operating Model port", async () => {
+    const governance = { listProposals: async () => [{ proposalId: "proposal-1" }] };
+    const airic = createAiricHttpHandler({ runtime: fakeRuntime(), authenticate: authenticated, authorize: (_actor, resource) => resource.kind === "operating-model" && resource.action === "human-governance", operatingModelGovernance: governance as never });
     const base = await listen((request, response) => { void airic.handle(request, response); });
-    const digest = "a".repeat(64);
-    expect(await (await fetch(`${base}/api/airic/works/work-1/reflection-candidates/${digest}`)).json()).toMatchObject({ diff: "+clarify" });
+    expect(await (await fetch(`${base}/api/airic/operating-model-proposals`)).json()).toEqual([{ proposalId: "proposal-1" }]);
     await airic.close();
   });
   it("awaits sensitive trace audit before delivery and fails closed on audit failure", async () => {
@@ -185,7 +184,7 @@ function fakeRuntime(overrides: Record<string, unknown> = {}): AiricRuntime {
   return {
     subscribe: () => () => {}, listWorks: () => [], getTrace: () => [], getWork: () => undefined,
     createWork: async () => ({}), sendMessage: async () => ({ text: "ok" }), completeWork: async () => ({}), interrupt: async () => {},
-    recordReflectionCandidate: async () => ({}), recordReflectionOutcome: async () => {}, attachEvidence: async () => ({ ref: {} }),
+    recordReflectionCandidate: async () => ({}), attachEvidence: async () => ({ ref: {} }),
     options: { harness: { capabilities: () => ({ resume: false, interrupt: false, contextHook: false, compactionTrace: false }), run: async () => ({ text: "" }) } },
     ...overrides,
   } as unknown as AiricRuntime;
