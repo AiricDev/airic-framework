@@ -22,7 +22,7 @@ export interface TrustedCallContext {
 
 export interface CommandReceipt {
   commandId: string;
-  status: "committed" | "pending" | "rejected";
+  status: "committed" | "pending" | "rejected" | "unknown";
   revision?: string;
   result?: unknown;
   error?: { code: string; message: string; details?: unknown };

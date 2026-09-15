@@ -11,6 +11,13 @@ class FakeEventSource implements EventSourceLike {
 }
 
 describe("AiricClient", () => {
+  it("uploads a binary Work file without embedding bytes in JSON", async () => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ digest: "a".repeat(64), size: 3, extraction: { digest: "b".repeat(64), blocks: 1, warnings: [] } }), { status: 201 }));
+    const client = createAiricClient({ fetch: request });
+    const file = new File(["pdf"], "report evidence.pdf", { type: "application/pdf" });
+    expect((await client.uploadEvidenceFile("work-1", file)).extraction?.blocks).toBe(1);
+    expect(request).toHaveBeenCalledWith("/api/airic/works/work-1/uploads", expect.objectContaining({ method: "PUT", body: file, headers: { "content-type": "application/pdf", "x-airic-filename": "report%20evidence.pdf" } }));
+  });
   it("uses the configured base path and maps typed failures", async () => {
     const request = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify([{ id: "one" }]), { status: 200 })).mockResolvedValueOnce(new Response(JSON.stringify({ error: "Missing", code: "WorkNotFound" }), { status: 404 }));
     const client = createAiricClient({ baseUrl: "/api/airic/", fetch: request });

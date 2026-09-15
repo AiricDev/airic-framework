@@ -21,6 +21,22 @@ async function listen(handle: (request: import("node:http").IncomingMessage, res
 }
 
 describe("Airic HTTP hosting", () => {
+  it("accepts bounded binary Work uploads only with Work upload access", async () => {
+    const attached = vi.fn(async (_workId: string, input: { name: string; mediaType: string; content: Uint8Array }) => ({ digest: "a".repeat(64), size: input.content.length }));
+    let permitted = false;
+    const runtime = fakeRuntime({ getWork: () => testWork, attachEvidence: attached });
+    const airic = createAiricHttpHandler({ runtime, authenticate: authenticated, authorize: (_actor, resource) => resource.kind === "work" && resource.action === "upload" && permitted });
+    const base = await listen((request, response) => { void airic.handle(request, response); });
+    const url = `${base}/api/airic/works/work-1/uploads`;
+    const headers = { "content-type": "application/pdf", "x-airic-filename": encodeURIComponent("equipment.pdf") };
+    expect((await fetch(url, { method: "PUT", headers, body: "%PDF-1.4" })).status).toBe(403);
+    expect(attached).not.toHaveBeenCalled();
+    permitted = true;
+    expect(await (await fetch(url, { method: "PUT", headers, body: "%PDF-1.4" })).json()).toMatchObject({ size: 8 });
+    expect(attached).toHaveBeenCalledWith("work-1", expect.objectContaining({ name: "equipment.pdf", mediaType: "application/pdf" }));
+    expect((await fetch(url, { method: "PUT", headers: { ...headers, "x-airic-filename": "..%2Fsecret" }, body: "x" })).status).toBe(400);
+    await airic.close();
+  });
   it("denies anonymous access and filters Work lists and trace with the same host policy", async () => {
     const own = { ...testWork, id: "own" };
     const other = { ...testWork, id: "other", createdBy: "someone-else" };
@@ -34,6 +50,27 @@ describe("Airic HTTP hosting", () => {
     expect((await fetch(`${base}/api/airic/works/other/trace`, { headers })).status).toBe(403);
     const connection = await fetch(`${base}/api/airic/works/own/agent-connection`, { headers });
     expect(connection.status).toBe(501);
+    await airic.close();
+  });
+  it("serves a Reflection candidate only to an actor allowed to reflect on its Work", async () => {
+    const runtime = fakeRuntime({ getWork: () => testWork, readReflectionCandidate: async () => ({ candidate: { targetPath: "operating/process.md" }, diff: "+clarify" }) });
+    const airic = createAiricHttpHandler({ runtime, authenticate: authenticated, authorize: (_actor, resource) => resource.kind === "work" && resource.action === "reflect" });
+    const base = await listen((request, response) => { void airic.handle(request, response); });
+    const digest = "a".repeat(64);
+    expect(await (await fetch(`${base}/api/airic/works/work-1/reflection-candidates/${digest}`)).json()).toMatchObject({ diff: "+clarify" });
+    await airic.close();
+  });
+  it("awaits sensitive trace audit before delivery and fails closed on audit failure", async () => {
+    const audit = vi.fn(async () => {});
+    const runtime = fakeRuntime({ getWork: () => testWork, getTrace: () => [traceEvent("work-1")] });
+    const airic = createAiricHttpHandler({ runtime, authenticate: authenticated, authorize, onTraceRead: audit });
+    const base = await listen((request, response) => { void airic.handle(request, response); });
+    expect((await fetch(`${base}/api/airic/works/work-1/trace`)).status).toBe(200);
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ id: "browser-user" }), testWork, "http");
+    audit.mockRejectedValueOnce(new Error("Audit unavailable"));
+    const blocked = await fetch(`${base}/api/airic/works/work-1/trace`);
+    expect(blocked.status).toBe(400);
+    expect(await blocked.json()).toMatchObject({ code: "RequestFailed" });
     await airic.close();
   });
   it("mounts below a base path without consuming application routes", async () => {

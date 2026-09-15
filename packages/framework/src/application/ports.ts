@@ -29,6 +29,12 @@ export interface RuntimeStore {
   getObject(digest: string): Promise<Uint8Array>;
 }
 
+/** A host-produced, reviewable text projection of an uploaded Work resource. */
+export interface WorkEvidenceExtraction {
+  blocks: readonly { locator: string; text: string }[];
+  warnings: readonly string[];
+}
+
 export interface HarnessTool {
   name: string;
   description: string;
@@ -72,6 +78,7 @@ export interface AgentHarness {
     onEvent(event: HarnessEvent): Promise<void>;
   }): Promise<{ text: string; result?: unknown }>;
   interrupt?(workId: string): Promise<void>;
+  currentWorkspaceChangeSet?(workId: string): Promise<string | undefined>;
 }
 
 export interface WorkTypeSource {

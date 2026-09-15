@@ -130,6 +130,16 @@ function scopedGrant(grant: WorkspaceGrant, workInput: unknown): WorkspaceGrant 
 
 export function checkToolName(id: string): string { return `workspace_check_${id.replace(/[^a-zA-Z0-9_-]/g, "_")}`; }
 
+export async function readWorkspaceChangeSet(input: { policy: WorkspacePolicy; moduleId: string; workTypeId: string; workInput?: unknown; stateDirectory: string }): Promise<string | undefined> {
+  const configuredGrant = input.policy.grants.find((candidate) => candidate.moduleId === input.moduleId && candidate.workTypeId === input.workTypeId);
+  if (!configuredGrant) return undefined;
+  const state = await readState(resolve(input.stateDirectory, "workspace-state.json"));
+  if (!state) return undefined;
+  const root = await realpath(resolve(input.policy.root));
+  const changedFiles = await changes(root, scopedGrant(configuredGrant, input.workInput), state, true);
+  return digest(JSON.stringify(changedFiles));
+}
+
 export async function readWorkspaceStatus(root: string): Promise<{ gitHead?: string; dirty: boolean; status: string; diff: string }> {
   const resolved = await realpath(resolve(root));
   try {

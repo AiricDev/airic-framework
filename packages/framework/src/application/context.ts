@@ -11,6 +11,15 @@ export interface ContextBlock {
   authority: "operating-model" | "domain" | "user" | "runtime";
 }
 
+/** UI navigation hints only. They never amend a Work target or authorization. */
+export interface TurnContextRef {
+  namespace: string;
+  resourceType: string;
+  resourceId: string;
+  revision?: string;
+  selection?: Readonly<Record<string, unknown>>;
+}
+
 export interface ContextProvenance {
   source: { kind: "work" | "definition" | "domain-source" | "tool"; id: string; path?: string };
   reason: "required" | "selected" | "tool-bound" | "work";
@@ -32,10 +41,11 @@ export interface ContextEnvelope {
   availableCapabilities: readonly string[];
   discoverableContent: readonly { id: string; title: string; path: string; role: string; digest: string }[];
   provenance: readonly ContextProvenance[];
+  turnContextRefs?: readonly TurnContextRef[];
   digest: string;
 }
 
-export function assembleContext(input: { work: Work; definition: WorkDefinition; domains: readonly DomainProvider[]; sequence: number }): ContextEnvelope {
+export function assembleContext(input: { work: Work; definition: WorkDefinition; domains: readonly DomainProvider[]; sequence: number; turnContextRefs?: readonly TurnContextRef[] }): ContextEnvelope {
   const selected = new Set(input.work.selectedContent);
   const documents = [...input.definition.required, ...[...input.definition.documents.values()].filter((doc) => selected.has(doc.id))]
     .filter((doc, index, all) => all.findIndex((candidate) => candidate.id === doc.id) === index);
@@ -61,7 +71,7 @@ export function assembleContext(input: { work: Work; definition: WorkDefinition;
     workType: { ...input.work.workType, operatingDigest: input.definition.digest, ...input.definition.source },
     domainBindings: input.work.domainBindings,
     instructions, observations, capabilityCatalog, availableCapabilities: capabilityCatalog.map((item) => item.id),
-    discoverableContent: input.definition.discoverable, provenance,
+    discoverableContent: input.definition.discoverable, provenance, ...(input.turnContextRefs?.length ? { turnContextRefs: input.turnContextRefs } : {}),
   };
   return { envelopeId: randomUUID(), assemblerVersion: "airic-context-v1", ...body, digest: hash(stableStringify(body)) };
 }

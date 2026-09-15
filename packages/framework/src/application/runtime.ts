@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { prepareAction, settleAction, type Action } from "../domain/action.js";
 import { createWork, reviseWork, type Work } from "../domain/work.js";
 import { bindingRef, DomainInvocationError, type CommandReceipt, type DomainProvider, type TrustedCallContext } from "../integration/contracts.js";
-import { assembleContext, hash } from "./context.js";
-import type { AgentHarness, HarnessTool, LiveWorkEvent, RuntimeEvent, RuntimeStore, TraceEvent } from "./ports.js";
+import { assembleContext, hash, type TurnContextRef } from "./context.js";
+import type { AgentHarness, HarnessTool, LiveWorkEvent, RuntimeEvent, RuntimeStore, TraceEvent, WorkEvidenceExtraction } from "./ports.js";
 import { loadWorkDefinition, type WorkDefinition } from "./work-definition.js";
 import type { ModuleRegistry } from "./module.js";
 
@@ -13,7 +13,9 @@ export interface RuntimeOptions {
   modules: ModuleRegistry;
   now?: () => Date;
   id?: () => string;
-  authorizeWork?: (actor: TrustedCallContext["actor"], work: Work, action: "prompt" | "capability") => Promise<boolean> | boolean;
+  authorizeWork?: (actor: TrustedCallContext["actor"], work: Work, action: "prompt" | "capability" | "read-trace") => Promise<boolean> | boolean;
+  onTraceRead?: (actor: TrustedCallContext["actor"], work: Work, reason: string) => Promise<void>;
+  extractEvidence?: (input: { name: string; mediaType: string; content: Uint8Array }) => Promise<WorkEvidenceExtraction>;
 }
 
 export interface CreateWorkInput {
@@ -78,21 +80,21 @@ export class AiricRuntime {
     return work;
   }
 
-  async sendMessage(workId: string, message: string, actor: TrustedCallContext["actor"]): Promise<{ text: string; result?: unknown }> {
+  async sendMessage(workId: string, message: string, actor: TrustedCallContext["actor"], turnContextRefs?: readonly TurnContextRef[]): Promise<{ text: string; result?: unknown }> {
     const work = this.#requireOpenWork(workId);
     await this.#authorize(actor, work, "prompt");
     if (this.#activeTurns.has(workId)) throw new Error(`WorkBusy: ${workId}`);
     this.#activeTurns.add(workId);
-    try { return await this.#runTurn(work, message, actor); }
+    try { return await this.#runTurn(work, message, actor, turnContextRefs); }
     finally { this.#activeTurns.delete(workId); }
   }
 
-  async #runTurn(work: Work, message: string, actor: TrustedCallContext["actor"]): Promise<{ text: string; result?: unknown }> {
+  async #runTurn(work: Work, message: string, actor: TrustedCallContext["actor"], turnContextRefs?: readonly TurnContextRef[]): Promise<{ text: string; result?: unknown }> {
     const workId = work.id;
-    await this.#traceEvent(workId, "message.user", actor.id, { text: message });
+    await this.#traceEvent(workId, "message.user", actor.id, { text: message, ...(turnContextRefs?.length ? { turnContextRefs } : {}) });
     const domains = this.#domainsFor(work);
     const sequence = this.#trace.filter((event) => event.workId === workId && event.type === "context.assembled").length + 1;
-    const initial = await this.#assembleAndTrace(work, domains, sequence);
+    const initial = await this.#assembleAndTrace(work, domains, sequence, undefined, turnContextRefs);
     const definition = initial.definition;
     const envelope = initial.envelope;
     const tools = this.#toolsFor(work, definition, domains, actor);
@@ -110,7 +112,7 @@ export class AiricRuntime {
           await this.#authorize(actor, this.#requireWork(workId), "prompt");
           contextSequence += 1;
           const refreshedWork = this.#requireWork(workId);
-          const refreshed = (await this.#assembleAndTrace(refreshedWork, this.#domainsFor(refreshedWork), contextSequence, "before-model-call")).envelope;
+          const refreshed = (await this.#assembleAndTrace(refreshedWork, this.#domainsFor(refreshedWork), contextSequence, "before-model-call", turnContextRefs)).envelope;
           expectedEnvelope = refreshed;
           return refreshed;
         },
@@ -166,8 +168,8 @@ export class AiricRuntime {
     const work = this.#requireOpenWork(workId);
     const definition = await this.#definitionFor(work);
     const trace = [...this.getTrace(workId)];
-    const contextIndex = trace.findLastIndex((event) => event.type === "context.assembled" && (event.payload as { workType?: { operatingDigest?: string } }).workType?.operatingDigest === definition.digest);
-    const currentEvidence = contextIndex < 0 ? [] : trace.slice(contextIndex + 1);
+    const contextIndex = trace.findLastIndex((event) => event.type === "context.assembled" && (event.payload as { workType?: { operatingDigest?: string } }).workType?.operatingDigest !== definition.digest);
+    const currentEvidence = trace.slice(contextIndex + 1);
     const toolResults = new Set(currentEvidence.filter((event) => event.type === "tool.result").map((event) => String((event.payload as { capabilityId?: string }).capabilityId)));
     const committedCommands = new Set([...this.#actions.values()].filter((action) => action.workId === workId && action.status === "committed").map((action) => action.capabilityId));
     const allowed = new Set(definition.manifest.capabilities.allowed);
@@ -186,16 +188,19 @@ export class AiricRuntime {
         if (payload.name?.startsWith("workspace_check_")) return payload.result?.check?.status === "passed";
         return true;
       });
-    const successfulHarnessTools = new Set(successfulHarnessEvents.map((event) => String((event.payload as { name?: string }).name)));
-    const missingTools = definition.manifest.completion.requiredTools.filter((name) => !successfulHarnessTools.has(name));
-    if (missingTools.length) throw new Error(`Work cannot complete before tools: ${missingTools.join(", ")}`);
-    const workspaceEvidence = successfulHarnessEvents
-      .filter((event) => String((event.payload as { name?: string }).name).startsWith("workspace_"))
-      .map((event) => (event.payload as { result?: { changeSetDigest?: string } }).result?.changeSetDigest)
-      .filter((value): value is string => Boolean(value));
-    if (definition.manifest.completion.requiredTools.some((name) => name.startsWith("workspace_")) && (workspaceEvidence.length === 0 || new Set(workspaceEvidence).size !== 1)) {
+    const workspaceRequired = definition.manifest.completion.requiredTools.some((name) => name.startsWith("workspace_"));
+    const latestChangeSet = [...successfulHarnessEvents].reverse().find((event) => (event.payload as { name?: string }).name?.startsWith("workspace_"));
+    const evidencedChangeSet = (latestChangeSet?.payload as { result?: { changeSetDigest?: string } } | undefined)?.result?.changeSetDigest;
+    const currentChangeSet = workspaceRequired && this.options.harness.currentWorkspaceChangeSet
+      ? await this.options.harness.currentWorkspaceChangeSet(workId) : evidencedChangeSet;
+    if (workspaceRequired && evidencedChangeSet && (!currentChangeSet || currentChangeSet !== evidencedChangeSet)) {
       throw new Error("Work cannot complete with stale workspace validation evidence");
     }
+    const successfulHarnessTools = new Set(successfulHarnessEvents
+      .filter((event) => !(event.payload as { name?: string }).name?.startsWith("workspace_") || (event.payload as { result?: { changeSetDigest?: string } }).result?.changeSetDigest === currentChangeSet)
+      .map((event) => String((event.payload as { name?: string }).name)));
+    const missingTools = definition.manifest.completion.requiredTools.filter((name) => !successfulHarnessTools.has(name));
+    if (missingTools.length) throw new Error(`Work cannot complete before tools: ${missingTools.join(", ")}`);
     const completed = reviseWork(work, { status: "completed", result }, this.#now().toISOString());
     await this.#persist([{ kind: "work.saved", work: completed }]);
     await this.#traceEvent(workId, "work.completed", "agent", { result });
@@ -220,6 +225,19 @@ export class AiricRuntime {
     return object;
   }
 
+  async readReflectionCandidate(workId: string, candidateDigest: string): Promise<{ candidate: Record<string, unknown>; diff: string }> {
+    this.#requireWork(workId);
+    const event = this.getTrace(workId).find((item) => item.type === "reflection.candidate" && (item.payload as { object?: { digest?: string } }).object?.digest === candidateDigest);
+    if (!event) throw new Error("Reflection candidate does not belong to this Work");
+    const payload = event.payload as Record<string, unknown>;
+    return { candidate: payload, diff: new TextDecoder().decode(await this.options.store.getObject(candidateDigest)) };
+  }
+
+  async recordReflectionApplied(workId: string, candidateDigest: string, reviewer: string, validation: unknown): Promise<void> {
+    await this.readReflectionCandidate(workId, candidateDigest);
+    await this.#traceEvent(workId, "reflection.applied-to-working-tree", reviewer, { candidateDigest, validation });
+  }
+
   async recordReflectionOutcome(workId: string, outcome: { candidateDigest: string; decision: "adopted" | "rejected"; reviewer: string; appliedRef?: { kind: "git-commit" | "domain-release"; id: string; version: string }; validation?: unknown }): Promise<void> {
     this.#requireWork(workId);
     const candidate = this.getTrace(workId).find((event) => event.type === "reflection.candidate" && (event.payload as { object?: { digest?: string } }).object?.digest === outcome.candidateDigest);
@@ -229,11 +247,15 @@ export class AiricRuntime {
     await this.#traceEvent(workId, `reflection.${outcome.decision}`, outcome.reviewer, outcome);
   }
 
-  async attachEvidence(workId: string, input: { name: string; mediaType: string; content: Uint8Array }): Promise<{ digest: string; size: number }> {
+  async attachEvidence(workId: string, input: { name: string; mediaType: string; content: Uint8Array }): Promise<{ digest: string; size: number; extraction?: { digest: string; blocks: number; warnings: readonly string[] } }> {
     this.#requireOpenWork(workId);
+    const extracted = await this.options.extractEvidence?.(input);
+    if (extracted && (extracted.blocks.length > 1000 || extracted.blocks.some((block) => !block.locator || block.text.length > 12000) || JSON.stringify(extracted).length > 500000)) throw new Error("Extracted evidence exceeds Work limits");
     const object = await this.options.store.putObject(input.content);
-    await this.#traceEvent(workId, "context.external", "user", { name: input.name, mediaType: input.mediaType, object });
-    return object;
+    const projection = extracted ? await this.options.store.putObject(new TextEncoder().encode(JSON.stringify(extracted))) : undefined;
+    const extraction = projection ? { digest: projection.digest, blocks: extracted!.blocks.length, warnings: extracted!.warnings } : undefined;
+    await this.#traceEvent(workId, "context.external", "user", { name: input.name, mediaType: input.mediaType, object, ...(extraction ? { extraction } : {}) });
+    return { ...object, ...(extraction ? { extraction } : {}) };
   }
 
   async reconcileAction(actionId: string, actor: TrustedCallContext["actor"]): Promise<Action> {
@@ -260,9 +282,34 @@ export class AiricRuntime {
     })));
     return [
       ...capabilityTools,
+      ...(this.options.extractEvidence ? [
+        { name: "airic_list_work_evidence", description: "List Work documents, or list up to 50 block locators of one document (digest, offset). No document text is returned.", inputSchema: { type: "object", properties: { digest: { type: "string" }, offset: { type: "integer", minimum: 0 } }, additionalProperties: false }, invoke: async (value: unknown) => {
+          const input = value as { digest?: string; offset?: number };
+          const events = this.getTrace(work.id).filter((event) => event.type === "context.external");
+          if (!input.digest) return events.map((event) => { const item = event.payload as { name: string; mediaType: string; object: { digest: string; size: number }; extraction?: { blocks: number; warnings: readonly string[] } }; return { name: item.name, mediaType: item.mediaType, digest: item.object.digest, size: item.object.size, blocks: item.extraction?.blocks ?? 0, warnings: item.extraction?.warnings ?? ["No readable text projection"] }; });
+          const event = events.find((item) => (item.payload as { object?: { digest?: string } }).object?.digest === input.digest);
+          const extraction = (event?.payload as { extraction?: { digest: string } } | undefined)?.extraction;
+          if (!extraction) throw new Error("No readable extraction for this Work evidence");
+          const projection = JSON.parse(new TextDecoder().decode(await this.options.store.getObject(extraction.digest))) as WorkEvidenceExtraction;
+          const offset = Number.isSafeInteger(input.offset ?? 0) && (input.offset ?? 0) >= 0 ? input.offset ?? 0 : 0;
+          return { digest: input.digest, total: projection.blocks.length, offset, locators: projection.blocks.slice(offset, offset + 50).map((block) => block.locator), warnings: projection.warnings };
+        } },
+        { name: "airic_read_work_evidence", description: "Read one extracted document block by its Work-bound digest and locator. Never infer image or scanned-page content from extracted text.", inputSchema: { type: "object", properties: { digest: { type: "string" }, locator: { type: "string" }, reason: { type: "string" } }, required: ["digest", "locator", "reason"], additionalProperties: false }, invoke: async (value: unknown) => {
+          const input = value as { digest: string; locator: string; reason: string };
+          if (!/^[a-f0-9]{64}$/u.test(input.digest) || !input.reason?.trim() || input.reason.length > 500) throw new Error("Invalid evidence read request");
+          const event = this.getTrace(work.id).find((item) => item.type === "context.external" && (item.payload as { object?: { digest?: string } }).object?.digest === input.digest);
+          const extraction = (event?.payload as { extraction?: { digest: string } } | undefined)?.extraction;
+          if (!extraction) throw new Error("No readable extraction for this Work evidence");
+          const projection = JSON.parse(new TextDecoder().decode(await this.options.store.getObject(extraction.digest))) as WorkEvidenceExtraction;
+          const block = projection.blocks.find((item) => item.locator === input.locator);
+          if (!block) throw new Error("Evidence locator is not available");
+          await this.#traceEvent(work.id, "context.retrieved", "agent", { source: "work-evidence", digest: input.digest, locator: input.locator, textDigest: hash(block.text), reason: input.reason });
+          return { ...block, documentDigest: input.digest, warnings: projection.warnings };
+        } },
+      ] satisfies HarnessTool[] : []),
       { name: "airic_read_work_document", description: "Load an on-demand Work Definition document for the next reasoning step.", inputSchema: { type: "object", properties: { id: { type: "string" }, reason: { type: "string" } }, required: ["id", "reason"] }, invoke: async (value) => { const input = value as { id: string; reason: string }; const revised = await this.selectContent(work.id, input.id, input.reason); const current = await this.#definitionFor(revised); const doc = current.documents.get(input.id); if (!doc) throw new Error(`Work Definition document ${input.id} changed before it could be read`); return { id: doc.id, content: doc.content, digest: doc.digest, workRevision: revised.revision }; } },
       { name: "airic_read_domain_source", description: "Read reviewed domain source tied to the active release.", inputSchema: { type: "object", properties: { domainId: { type: "string" }, path: { type: "string" }, symbol: { type: "string" }, reason: { type: "string" } }, required: ["domainId", "path", "reason"] }, invoke: async (value) => { const input = value as { domainId: string; path: string; symbol?: string; reason: string }; const module = domains.find((candidate) => candidate.id === input.domainId); if (!module?.readSource) throw new Error(`Domain source is unavailable for ${input.domainId}`); const result = await module.readSource({ path: input.path, ...(input.symbol ? { symbol: input.symbol } : {}) }); await this.#traceEvent(work.id, "context.retrieved", "agent", { source: "domain", domainId: module.id, release: module.release, locator: result.locator, digest: hash(result.content), reason: input.reason }); return result; } },
-      { name: "airic_read_work_trace", description: "Read canonical trace for this Work, or the source Work named by a Reflection Work.", inputSchema: { type: "object", properties: { workId: { type: "string" }, reason: { type: "string" } }, required: ["reason"] }, invoke: async (value) => { const input = value as { workId?: string; reason: string }; const sourceWorkId = work.workType.workTypeId === "reflection" ? String(input.workId ?? (work.input as { sourceWorkId?: string }).sourceWorkId ?? work.id) : work.id; await this.#authorize(actor, this.#requireWork(sourceWorkId), "prompt"); const events = this.getTrace(sourceWorkId); if (!events.length) throw new Error(`No readable trace for Work ${sourceWorkId}`); await this.#traceEvent(work.id, "context.retrieved", "agent", { source: "trace", sourceWorkId, eventCount: events.length, reason: input.reason }); return events; } },
+      { name: "airic_read_work_trace", description: "Read canonical trace for this Work, or the source Work named by a Reflection Work.", inputSchema: { type: "object", properties: { workId: { type: "string" }, reason: { type: "string" } }, required: ["reason"] }, invoke: async (value) => { const input = value as { workId?: string; reason: string }; const boundSource = (work.input as { sourceWorkId?: string }).sourceWorkId; const sourceWorkId = work.workType.workTypeId === "reflection" ? String(boundSource ?? work.id) : work.id; if (input.workId && input.workId !== sourceWorkId) throw new Error("ReflectionSourceMismatch"); const sourceWork = this.#requireWork(sourceWorkId); await this.#authorize(actor, sourceWork, "read-trace"); await this.options.onTraceRead?.(actor, sourceWork, input.reason); const events = this.getTrace(sourceWorkId); if (!events.length) throw new Error(`No readable trace for Work ${sourceWorkId}`); await this.#traceEvent(work.id, "context.retrieved", "agent", { source: "trace", sourceWorkId, eventCount: events.length, reason: input.reason }); return events; } },
       { name: "airic_record_reflection_candidate", description: "Store a reviewable candidate diff linked to trace evidence.", inputSchema: { type: "object", properties: { targetKind: { enum: ["operating-model", "domain", "associated"] }, targetPath: { type: "string" }, baseCommit: { type: "string" }, baseContentDigest: { type: "string" }, diff: { type: "string" }, rationale: { type: "string" }, evidenceEventIds: { type: "array", items: { type: "string" } } }, required: ["targetKind", "targetPath", "baseContentDigest", "diff", "rationale", "evidenceEventIds"] }, invoke: async (value) => { if (work.workType.workTypeId !== "reflection") throw new Error("Reflection candidates can only be produced by a Reflection Work"); return this.recordReflectionCandidate(work.id, value as Parameters<AiricRuntime["recordReflectionCandidate"]>[1]); } },
       { name: "airic_complete_work", description: "Complete the Work with a structured result after required domain effects are confirmed.", inputSchema: { type: "object", properties: { result: {} }, required: ["result"] }, invoke: async (value) => this.completeWork(work.id, (value as { result: unknown }).result) },
     ];
@@ -320,16 +367,16 @@ export class AiricRuntime {
   #callContext(work: Work, module: DomainProvider, definition: WorkDefinition, actor: TrustedCallContext["actor"], action?: Action): TrustedCallContext {
     return { actor, workId: work.id, workType: { ...work.workType, operatingDigest: definition.digest }, expectedDomainRelease: module.release, ...(action ? { actionId: action.id, commandId: action.commandId } : {}) };
   }
-  async #authorize(actor: TrustedCallContext["actor"], work: Work, action: "prompt" | "capability"): Promise<void> {
+  async #authorize(actor: TrustedCallContext["actor"], work: Work, action: "prompt" | "capability" | "read-trace"): Promise<void> {
     if (this.options.authorizeWork && !await this.options.authorizeWork(actor, work, action)) throw new Error("WorkAccessDenied");
   }
   #domainsFor(work: Work): DomainProvider[] { const resolved = this.options.modules.resolve(work.workType).domains; return work.domainBindings.map((binding) => resolved.find((module) => module.id === binding.id) ?? fail(`Domain ${binding.id} is not available to ${work.workType.moduleId}/${work.workType.workTypeId}`)); }
   async #definitionFor(work: Work): Promise<WorkDefinition> { const resolved = this.options.modules.resolve(work.workType); return loadWorkDefinition(this.options.modules.source, { ...work.workType, packagePath: resolved.packagePath }); }
-  async #assembleAndTrace(work: Work, domains: readonly DomainProvider[], sequence: number, reason?: string): Promise<{ definition: WorkDefinition; envelope: ReturnType<typeof assembleContext> }> {
+  async #assembleAndTrace(work: Work, domains: readonly DomainProvider[], sequence: number, reason?: string, turnContextRefs?: readonly TurnContextRef[]): Promise<{ definition: WorkDefinition; envelope: ReturnType<typeof assembleContext> }> {
     const definition = await this.#definitionFor(work);
     const allowed = new Set(definition.manifest.capabilities.allowed);
     const authorizedDomains = domains.map((domain) => ({ ...domain, capabilities: domain.capabilities.filter((capability) => allowed.has(capability.id)) }));
-    const envelope = assembleContext({ work, definition, domains: authorizedDomains, sequence });
+    const envelope = assembleContext({ work, definition, domains: authorizedDomains, sequence, ...(turnContextRefs === undefined ? {} : { turnContextRefs }) });
     const previous = this.getTrace(work.id).filter((event) => event.type === "context.assembled").at(-1);
     const previousDigest = (previous?.payload as { workType?: { operatingDigest?: string } } | undefined)?.workType?.operatingDigest;
     if (previousDigest && previousDigest !== definition.digest) {
@@ -342,7 +389,7 @@ export class AiricRuntime {
     }
     await this.#traceEvent(work.id, "context.assembled", "runtime", {
       envelopeId: envelope.envelopeId, digest: envelope.digest, workType: envelope.workType,
-      sources: envelope.provenance, availableCapabilities: envelope.availableCapabilities, evidence, ...(reason ? { reason } : {}),
+      sources: envelope.provenance, availableCapabilities: envelope.availableCapabilities, evidence, ...(reason ? { reason } : {}), ...(turnContextRefs?.length ? { turnContextRefs } : {}),
     });
     return { definition, envelope };
   }

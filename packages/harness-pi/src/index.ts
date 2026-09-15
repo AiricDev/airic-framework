@@ -13,7 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { renderContextEnvelope, type AgentHarness, type ContextEnvelope, type DeliveryRecord, type HarnessEvent, type HarnessTool } from "@airic/framework";
-import { createWorkspaceTools, type WorkspacePolicy } from "./workspace.js";
+import { createWorkspaceTools, readWorkspaceChangeSet, type WorkspacePolicy } from "./workspace.js";
 
 export { readWorkspaceStatus } from "./workspace.js";
 export type { WorkspaceCheck, WorkspaceGrant, WorkspacePolicy } from "./workspace.js";
@@ -78,6 +78,12 @@ export class PiHarness implements AgentHarness {
   }
 
   async interrupt(workId: string): Promise<void> { this.#sessions.get(workId)?.session.abort(); }
+  async currentWorkspaceChangeSet(workId: string): Promise<string | undefined> {
+    const binding = this.#sessions.get(workId);
+    if (!binding || !this.#options.workspace) return undefined;
+    const ref = binding.active.envelope.workType;
+    return readWorkspaceChangeSet({ policy: this.#options.workspace, moduleId: ref.moduleId, workTypeId: ref.workTypeId, workInput: binding.active.workInput, stateDirectory: join(this.#options.sessionDirectory, workId) });
+  }
   async dispose(): Promise<void> {
     for (const binding of this.#sessions.values()) { binding.disposeSubscription(); binding.session.dispose(); }
     this.#sessions.clear();

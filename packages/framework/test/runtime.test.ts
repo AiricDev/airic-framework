@@ -59,6 +59,23 @@ function fixture(commandMode: "committed" | "rejected" | "unknown" = "committed"
 }
 
 describe("AiricRuntime", () => {
+  it("keeps host-extracted evidence Work-bound and exposes only requested blocks", async () => {
+    const { runtime, harness } = fixture(); await runtime.open();
+    runtime.options.extractEvidence = async () => ({ blocks: [{ locator: "page:1:part:1", text: "Equipment details" }], warnings: ["Images were not read"] });
+    const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Inspect evidence" }, creator);
+    const another = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Other" }, creator);
+    const uploaded = await runtime.attachEvidence(work.id, { name: "equipment.pdf", mediaType: "application/pdf", content: new Uint8Array([1, 2, 3]) });
+    expect(uploaded.extraction?.blocks).toBe(1);
+    harness.enqueue(
+      { call: { tool: "airic_list_work_evidence", input: { digest: uploaded.digest }, requestId: "list" } },
+      { call: { tool: "airic_read_work_evidence", input: { digest: uploaded.digest, locator: "page:1:part:1", reason: "Review equipment" }, requestId: "read" } },
+    );
+    const result = await runtime.sendMessage(work.id, "Review the document", creator);
+    expect(result.result).toMatchObject({ text: "Equipment details", warnings: ["Images were not read"] });
+    expect(runtime.getTrace(work.id).some((event) => event.type === "context.retrieved" && (event.payload as { source?: string }).source === "work-evidence")).toBe(true);
+    harness.enqueue({ call: { tool: "airic_read_work_evidence", input: { digest: uploaded.digest, locator: "page:1:part:1", reason: "Cross Work" }, requestId: "denied" } });
+    await expect(runtime.sendMessage(another.id, "Try to read", creator)).rejects.toThrow("No readable extraction for this Work evidence");
+  });
   it("persists creator identity, serializes turns and rechecks authority before tool execution", async () => {
     const { runtime, harness } = fixture(); await runtime.open();
     let authorized = true;
@@ -158,6 +175,10 @@ describe("AiricRuntime", () => {
     const object = await runtime.recordReflectionCandidate(work.id, { targetKind: "operating-model", targetPath: "process.md", baseContentDigest: definition.digest, diff: "+Clarify alternate order", rationale: "Trace showed hesitation", evidenceEventIds: [] });
     expect(object.digest).toHaveLength(64);
     expect(runtime.getTrace(work.id).at(-1)?.type).toBe("reflection.candidate");
+    expect(await runtime.readReflectionCandidate(work.id, object.digest)).toMatchObject({ diff: "+Clarify alternate order", candidate: { targetPath: "process.md" } });
+    await runtime.recordReflectionApplied(work.id, object.digest, "reviewer", { check: "passed" });
+    expect(runtime.getTrace(work.id).at(-1)?.type).toBe("reflection.applied-to-working-tree");
+    await expect(runtime.readReflectionCandidate(work.id, "f".repeat(64))).rejects.toThrow("does not belong");
   });
 
   it("does not let a rejected Command satisfy Work completion", async () => {
@@ -204,6 +225,34 @@ describe("AiricRuntime", () => {
     );
     await runtime.sendMessage(work.id, "Finish with evidence", { id: "user", scopes: [] });
     expect(runtime.getWork(work.id)?.status).toBe("completed");
+  });
+
+  it("keeps successful workspace evidence across unchanged context refreshes", async () => {
+    const { runtime, harness, definitions } = fixture();
+    (definitions.definitions["cases/assist"]!.manifest as { completion: { requiredCapabilities: string[]; requiredTools?: string[] } }).completion = { requiredCapabilities: [], requiredTools: ["workspace_check_domain_tests", "workspace_changes"] };
+    await runtime.open();
+    const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Validate governed files" }, creator);
+    harness.enqueue(
+      { event: { type: "tool", payload: { phase: "end", name: "workspace_check_domain_tests", isError: false, result: { check: { status: "passed" }, changeSetDigest: "current-files" } } } },
+      { event: { type: "tool", payload: { phase: "end", name: "workspace_changes", isError: false, result: { changes: [{ path: "src/domain/case.ts", status: "modified" }], changeSetDigest: "current-files" } } } },
+    );
+    await runtime.sendMessage(work.id, "Validate", { id: "user", scopes: [] });
+    harness.enqueue({ call: { tool: "airic_complete_work", input: { result: {} }, requestId: "complete-after-refresh" } });
+    await runtime.sendMessage(work.id, "Complete", { id: "user", scopes: [] });
+    expect(runtime.getWork(work.id)?.status).toBe("completed");
+  });
+
+  it("does not reuse a check from an older workspace change set", async () => {
+    const { runtime, harness, definitions } = fixture();
+    (definitions.definitions["cases/assist"]!.manifest as { completion: { requiredCapabilities: string[]; requiredTools?: string[] } }).completion = { requiredCapabilities: [], requiredTools: ["workspace_check_domain_tests", "workspace_changes"] };
+    await runtime.open();
+    const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Validate latest files" }, creator);
+    harness.enqueue(
+      { event: { type: "tool", payload: { phase: "end", name: "workspace_check_domain_tests", isError: false, result: { check: { status: "passed" }, changeSetDigest: "old-files" } } } },
+      { event: { type: "tool", payload: { phase: "end", name: "workspace_changes", isError: false, result: { changes: [{ path: "src/domain/case.ts" }], changeSetDigest: "new-files" } } } },
+      { call: { tool: "airic_complete_work", input: { result: {} }, requestId: "stale-check" } },
+    );
+    await expect(runtime.sendMessage(work.id, "Finish", { id: "user", scopes: [] })).rejects.toThrow("workspace_check_domain_tests");
   });
 
   it("reconciles an unknown response by stable command identity without redispatch", async () => {
