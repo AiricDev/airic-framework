@@ -28,4 +28,4 @@ Git is required by `create-airic`. A generated project is initialized on `main` 
 - `create-airic`: generator built from the canonical default template.
 - `@airic/testing`: provider-neutral fakes and fixtures.
 
-Read [the integration guide](./docs/application-integration.md), [the ACP browser contract](./docs/acp-browser-contract.md), [the implementation ledger](./docs/development-plan.md), [the sanitized live-provider acceptance](./docs/live-provider-acceptance.md), and [the pre-0.2 historical design](./docs/airic-framework-technical-design.md).
+Read [the Agent–Business State boundary](./docs/agent-business-state-boundary.md), [the integration guide](./docs/application-integration.md), [the ACP browser contract](./docs/acp-browser-contract.md), [the implementation ledger](./docs/development-plan.md), [the sanitized live-provider acceptance](./docs/live-provider-acceptance.md), and [the pre-0.2 historical design](./docs/airic-framework-technical-design.md).

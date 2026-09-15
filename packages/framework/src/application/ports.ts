@@ -89,3 +89,21 @@ export interface WorkTypeSource {
   listWorkTypeFiles(ref: WorkTypeRef & { packagePath: string }): Promise<readonly string[]>;
   status?(): Promise<{ gitHead?: string; dirty: boolean }>;
 }
+
+/**
+ * Application-owned change management for an already reviewed Operating Model
+ * candidate.  The Framework deliberately does not prescribe asset storage,
+ * approval workflow, publishing, or runtime activation.
+ */
+export interface OperatingModelChangePort {
+  apply(input: {
+    candidateDigest: string;
+    target: { moduleId: string; workTypeId: string; path: string };
+    base: { contentDigest: string; gitHead?: string };
+    reviewer: string;
+    validation: unknown;
+  }): Promise<{
+    appliedRef: { kind: "git-commit" | "domain-release"; id: string; version: string };
+    validationEvidence: unknown;
+  }>;
+}

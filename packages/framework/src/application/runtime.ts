@@ -3,7 +3,7 @@ import { prepareAction, settleAction, type Action } from "../domain/action.js";
 import { createWork, reviseWork, type Work } from "../domain/work.js";
 import { bindingRef, DomainInvocationError, type CommandReceipt, type DomainProvider, type TrustedCallContext } from "../integration/contracts.js";
 import { assembleContext, hash, type TurnContextRef } from "./context.js";
-import type { AgentHarness, HarnessTool, LiveWorkEvent, RuntimeEvent, RuntimeStore, TraceEvent, WorkEvidenceExtraction } from "./ports.js";
+import type { AgentHarness, HarnessTool, LiveWorkEvent, OperatingModelChangePort, RuntimeEvent, RuntimeStore, TraceEvent, WorkEvidenceExtraction } from "./ports.js";
 import { loadWorkDefinition, type WorkDefinition } from "./work-definition.js";
 import type { ModuleRegistry } from "./module.js";
 
@@ -16,6 +16,13 @@ export interface RuntimeOptions {
   authorizeWork?: (actor: TrustedCallContext["actor"], work: Work, action: "prompt" | "capability" | "read-trace") => Promise<boolean> | boolean;
   onTraceRead?: (actor: TrustedCallContext["actor"], work: Work, reason: string) => Promise<void>;
   extractEvidence?: (input: { name: string; mediaType: string; content: Uint8Array }) => Promise<WorkEvidenceExtraction>;
+  /** Host-owned change management; omitted hosts remain review-only. */
+  operatingModelChanges?: OperatingModelChangePort;
+}
+
+export class OperatingModelChangeNotConfigured extends Error {
+  readonly code = "OperatingModelChangeNotConfigured";
+  constructor() { super("Operating Model change management is not configured"); }
 }
 
 export interface CreateWorkInput {
@@ -210,6 +217,7 @@ export class AiricRuntime {
   async recordReflectionCandidate(workId: string, candidate: {
     targetKind: "operating-model" | "domain" | "associated";
     targetPath: string;
+    target?: { moduleId: string; workTypeId: string };
     baseCommit?: string;
     baseContentDigest: string;
     diff: string;
@@ -220,6 +228,10 @@ export class AiricRuntime {
     const work = this.#requireOpenWork(workId);
     const definition = await this.#definitionFor(work);
     if (!definition.manifest.documents.some((document) => document.role === "reflection")) throw new Error("Candidate creation requires a Reflection Work Definition");
+    const bound = (work.input as { operatingModelTarget?: { moduleId?: string; workTypeId?: string; path?: string; baseContentDigest?: string } }).operatingModelTarget;
+    if (bound && (candidate.target?.moduleId !== bound.moduleId || candidate.target?.workTypeId !== bound.workTypeId || candidate.targetPath !== bound.path || candidate.baseContentDigest !== bound.baseContentDigest)) {
+      throw new Error("ReflectionCandidateTargetMismatch");
+    }
     const object = await this.options.store.putObject(new TextEncoder().encode(candidate.diff));
     await this.#traceEvent(workId, "reflection.candidate", "agent", { ...candidate, diff: undefined, object });
     return object;
@@ -233,18 +245,37 @@ export class AiricRuntime {
     return { candidate: payload, diff: new TextDecoder().decode(await this.options.store.getObject(candidateDigest)) };
   }
 
-  async recordReflectionApplied(workId: string, candidateDigest: string, reviewer: string, validation: unknown): Promise<void> {
-    await this.readReflectionCandidate(workId, candidateDigest);
-    await this.#traceEvent(workId, "reflection.applied-to-working-tree", reviewer, { candidateDigest, validation });
-  }
-
-  async recordReflectionOutcome(workId: string, outcome: { candidateDigest: string; decision: "adopted" | "rejected"; reviewer: string; appliedRef?: { kind: "git-commit" | "domain-release"; id: string; version: string }; validation?: unknown }): Promise<void> {
+  async recordReflectionOutcome(workId: string, outcome: { candidateDigest: string; decision: "adopted" | "rejected"; reviewer: string; validation?: unknown }): Promise<void> {
     this.#requireWork(workId);
     const candidate = this.getTrace(workId).find((event) => event.type === "reflection.candidate" && (event.payload as { object?: { digest?: string } }).object?.digest === outcome.candidateDigest);
     if (!candidate) throw new Error("Reflection outcome must reference a candidate from the same Work");
-    if (outcome.decision === "adopted" && !outcome.appliedRef) throw new Error("An adopted candidate requires the applied Git commit or domain release");
-    if (outcome.decision === "adopted" && (candidate.payload as { targetKind?: string }).targetKind !== "operating-model") throw new Error("Domain and Experience suggestions must be handed to Module Smith");
-    await this.#traceEvent(workId, `reflection.${outcome.decision}`, outcome.reviewer, outcome);
+    if (outcome.decision === "rejected") {
+      await this.#traceEvent(workId, "reflection.rejected", outcome.reviewer, outcome);
+      return;
+    }
+    const payload = candidate.payload as {
+      targetKind?: string; targetPath?: string; target?: { moduleId?: string; workTypeId?: string };
+      baseCommit?: string; baseContentDigest?: string; validation?: unknown;
+    };
+    if (payload.targetKind !== "operating-model") throw new Error("Domain and Experience suggestions must be handed to Module Smith");
+    if (!payload.target?.moduleId || !payload.target.workTypeId || !payload.targetPath || !payload.baseContentDigest) throw new Error("Operating Model candidate is missing its bound target or base digest");
+    const port = this.options.operatingModelChanges;
+    if (!port) throw new OperatingModelChangeNotConfigured();
+    const applied = await port.apply({
+      candidateDigest: outcome.candidateDigest,
+      target: { moduleId: payload.target.moduleId, workTypeId: payload.target.workTypeId, path: payload.targetPath },
+      base: { contentDigest: payload.baseContentDigest, ...(payload.baseCommit ? { gitHead: payload.baseCommit } : {}) },
+      reviewer: outcome.reviewer,
+      validation: outcome.validation ?? payload.validation ?? {},
+    });
+    await this.#traceEvent(workId, "reflection.adopted", outcome.reviewer, {
+      candidateDigest: outcome.candidateDigest,
+      reviewer: outcome.reviewer,
+      target: { moduleId: payload.target.moduleId, workTypeId: payload.target.workTypeId, path: payload.targetPath },
+      base: { contentDigest: payload.baseContentDigest, ...(payload.baseCommit ? { gitHead: payload.baseCommit } : {}) },
+      appliedRef: applied.appliedRef,
+      validationEvidence: applied.validationEvidence,
+    });
   }
 
   async attachEvidence(workId: string, input: { name: string; mediaType: string; content: Uint8Array }): Promise<{ digest: string; size: number; extraction?: { digest: string; blocks: number; warnings: readonly string[] } }> {
@@ -310,7 +341,7 @@ export class AiricRuntime {
       { name: "airic_read_work_document", description: "Load an on-demand Work Definition document for the next reasoning step.", inputSchema: { type: "object", properties: { id: { type: "string" }, reason: { type: "string" } }, required: ["id", "reason"] }, invoke: async (value) => { const input = value as { id: string; reason: string }; const revised = await this.selectContent(work.id, input.id, input.reason); const current = await this.#definitionFor(revised); const doc = current.documents.get(input.id); if (!doc) throw new Error(`Work Definition document ${input.id} changed before it could be read`); return { id: doc.id, content: doc.content, digest: doc.digest, workRevision: revised.revision }; } },
       { name: "airic_read_domain_source", description: "Read reviewed domain source tied to the active release.", inputSchema: { type: "object", properties: { domainId: { type: "string" }, path: { type: "string" }, symbol: { type: "string" }, reason: { type: "string" } }, required: ["domainId", "path", "reason"] }, invoke: async (value) => { const input = value as { domainId: string; path: string; symbol?: string; reason: string }; const module = domains.find((candidate) => candidate.id === input.domainId); if (!module?.readSource) throw new Error(`Domain source is unavailable for ${input.domainId}`); const result = await module.readSource({ path: input.path, ...(input.symbol ? { symbol: input.symbol } : {}) }); await this.#traceEvent(work.id, "context.retrieved", "agent", { source: "domain", domainId: module.id, release: module.release, locator: result.locator, digest: hash(result.content), reason: input.reason }); return result; } },
       { name: "airic_read_work_trace", description: "Read canonical trace for this Work, or the source Work named by a Reflection Work.", inputSchema: { type: "object", properties: { workId: { type: "string" }, reason: { type: "string" } }, required: ["reason"] }, invoke: async (value) => { const input = value as { workId?: string; reason: string }; const boundSource = (work.input as { sourceWorkId?: string }).sourceWorkId; const sourceWorkId = work.workType.workTypeId === "reflection" ? String(boundSource ?? work.id) : work.id; if (input.workId && input.workId !== sourceWorkId) throw new Error("ReflectionSourceMismatch"); const sourceWork = this.#requireWork(sourceWorkId); await this.#authorize(actor, sourceWork, "read-trace"); await this.options.onTraceRead?.(actor, sourceWork, input.reason); const events = this.getTrace(sourceWorkId); if (!events.length) throw new Error(`No readable trace for Work ${sourceWorkId}`); await this.#traceEvent(work.id, "context.retrieved", "agent", { source: "trace", sourceWorkId, eventCount: events.length, reason: input.reason }); return events; } },
-      { name: "airic_record_reflection_candidate", description: "Store a reviewable candidate diff linked to trace evidence.", inputSchema: { type: "object", properties: { targetKind: { enum: ["operating-model", "domain", "associated"] }, targetPath: { type: "string" }, baseCommit: { type: "string" }, baseContentDigest: { type: "string" }, diff: { type: "string" }, rationale: { type: "string" }, evidenceEventIds: { type: "array", items: { type: "string" } } }, required: ["targetKind", "targetPath", "baseContentDigest", "diff", "rationale", "evidenceEventIds"] }, invoke: async (value) => { if (work.workType.workTypeId !== "reflection") throw new Error("Reflection candidates can only be produced by a Reflection Work"); return this.recordReflectionCandidate(work.id, value as Parameters<AiricRuntime["recordReflectionCandidate"]>[1]); } },
+      { name: "airic_record_reflection_candidate", description: "Store a reviewable candidate diff linked to trace evidence.", inputSchema: { type: "object", properties: { targetKind: { enum: ["operating-model", "domain", "associated"] }, targetPath: { type: "string" }, target: { type: "object", properties: { moduleId: { type: "string" }, workTypeId: { type: "string" } }, required: ["moduleId", "workTypeId"] }, baseCommit: { type: "string" }, baseContentDigest: { type: "string" }, diff: { type: "string" }, rationale: { type: "string" }, evidenceEventIds: { type: "array", items: { type: "string" } } }, required: ["targetKind", "targetPath", "baseContentDigest", "diff", "rationale", "evidenceEventIds"] }, invoke: async (value) => { if (work.workType.workTypeId !== "reflection") throw new Error("Reflection candidates can only be produced by a Reflection Work"); return this.recordReflectionCandidate(work.id, value as Parameters<AiricRuntime["recordReflectionCandidate"]>[1]); } },
       { name: "airic_complete_work", description: "Complete the Work with a structured result after required domain effects are confirmed.", inputSchema: { type: "object", properties: { result: {} }, required: ["result"] }, invoke: async (value) => this.completeWork(work.id, (value as { result: unknown }).result) },
     ];
   }

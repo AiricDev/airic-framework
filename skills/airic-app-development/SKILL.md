@@ -17,5 +17,6 @@ Choose the task and read only its reference:
 - Idempotency, `unknown`, recovery, journal, backup or version upgrade: [reliability.md](references/reliability.md)
 - Tests, architecture checks, packing and acceptance: [verification.md](references/verification.md)
 - Existing Python, Java or Node business system over HTTP: [remote-domain-integration.md](references/remote-domain-integration.md)
+- Agent cognitive projection, Business State boundary or reflection adoption: [agent-business-state-boundary.md](references/agent-business-state-boundary.md)
 
 Implement the smallest end-to-end behavior through public package exports. Verify the affected boundary with focused tests, then run the relevant architecture and packaging checks. In the handoff, identify affected Domain bindings, Operating digest/Git state or capability IDs when they matter; distinguish canonical trace and committed business receipts from transient Agent text.

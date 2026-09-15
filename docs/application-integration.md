@@ -1,5 +1,7 @@
 # Application and Module integration
 
+Start with [the Agent–Business State boundary](./agent-business-state-boundary.md). The business application owns authoritative state, its deterministic Cognitive Interface and the Capability API; Airic owns Work, Action, context delivery and trace.
+
 An Airic Application selects and composes Modules. A Module is the source-ownership unit for one modification closure and may contain Domain code, use cases, Operating WorkTypes, Experience contributions, infrastructure and tests.
 
 `module.yml` declares identity, Domain imports/exports, WorkType package paths and optional server/browser contribution entrypoints. The Application loads modules in dependency order. Missing dependencies, cycles, duplicate identities, incompatible releases and route conflicts fail at startup.

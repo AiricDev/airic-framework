@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AiricRuntime, DomainInvocationError, ModuleRegistry, type CommandInspection, type DomainProvider } from "@airic/framework";
+import { AiricRuntime, DomainInvocationError, ModuleRegistry, OperatingModelChangeNotConfigured, type CommandInspection, type DomainProvider } from "@airic/framework";
 import { FakeHarness, MemoryModuleSource, MemoryRuntimeStore } from "@airic/testing";
 const creator = { id: "user", scopes: [] };
 
@@ -172,12 +172,12 @@ describe("AiricRuntime", () => {
     const { runtime } = fixture(); await runtime.open();
     const work = await runtime.createWork({ moduleId: "development", workTypeId: "reflection", objective: "Reflect" }, creator);
     const definition = await runtime.loadDefinition("development", "reflection");
-    const object = await runtime.recordReflectionCandidate(work.id, { targetKind: "operating-model", targetPath: "process.md", baseContentDigest: definition.digest, diff: "+Clarify alternate order", rationale: "Trace showed hesitation", evidenceEventIds: [] });
+    const object = await runtime.recordReflectionCandidate(work.id, { targetKind: "operating-model", targetPath: "process.md", target: { moduleId: "cases", workTypeId: "assist" }, baseContentDigest: definition.digest, diff: "+Clarify alternate order", rationale: "Trace showed hesitation", evidenceEventIds: [] });
     expect(object.digest).toHaveLength(64);
     expect(runtime.getTrace(work.id).at(-1)?.type).toBe("reflection.candidate");
     expect(await runtime.readReflectionCandidate(work.id, object.digest)).toMatchObject({ diff: "+Clarify alternate order", candidate: { targetPath: "process.md" } });
-    await runtime.recordReflectionApplied(work.id, object.digest, "reviewer", { check: "passed" });
-    expect(runtime.getTrace(work.id).at(-1)?.type).toBe("reflection.applied-to-working-tree");
+    await expect(runtime.recordReflectionOutcome(work.id, { candidateDigest: object.digest, decision: "adopted", reviewer: "reviewer", validation: { check: "passed" } })).rejects.toBeInstanceOf(OperatingModelChangeNotConfigured);
+    expect(runtime.getTrace(work.id).some((event) => event.type === "reflection.adopted")).toBe(false);
     await expect(runtime.readReflectionCandidate(work.id, "f".repeat(64))).rejects.toThrow("does not belong");
   });
 
@@ -269,8 +269,12 @@ describe("AiricRuntime", () => {
   it("fails closed when a bound Domain build changes", async () => {
     const { runtime, domain, harness } = fixture(); await runtime.open();
     const source = await runtime.createWork({ moduleId: "development", workTypeId: "reflection", objective: "Find a domain improvement" }, creator);
-    const candidate = await runtime.recordReflectionCandidate(source.id, { targetKind: "operating-model", targetPath: "process.md", baseContentDigest: domain.sourceBundle.digest, diff: "+Document the invariant reason", rationale: "Improve Agent guidance", evidenceEventIds: [] });
-    await runtime.recordReflectionOutcome(source.id, { candidateDigest: candidate.digest, decision: "adopted", reviewer: "architect", appliedRef: { kind: "git-commit", id: "cases/assist", version: "abc" }, validation: { tests: "passed" } });
+    const candidate = await runtime.recordReflectionCandidate(source.id, { targetKind: "operating-model", targetPath: "process.md", target: { moduleId: "cases", workTypeId: "assist" }, baseContentDigest: domain.sourceBundle.digest, diff: "+Document the invariant reason", rationale: "Improve Agent guidance", evidenceEventIds: [] });
+    runtime.options.operatingModelChanges = { apply: async (input) => {
+      expect(input).toMatchObject({ candidateDigest: candidate.digest, target: { moduleId: "cases", workTypeId: "assist", path: "process.md" }, reviewer: "architect" });
+      return { appliedRef: { kind: "git-commit", id: "cases/assist", version: "abc" }, validationEvidence: { tests: "passed" } };
+    } };
+    await runtime.recordReflectionOutcome(source.id, { candidateDigest: candidate.digest, decision: "adopted", reviewer: "architect", validation: { tests: "requested" } });
     expect(runtime.getWork(source.id)?.domainBindings).toEqual([]);
     const bound = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Use the bound release" }, creator);
     (domain as { buildId: string }).buildId = "build-2";

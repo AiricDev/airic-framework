@@ -27,6 +27,7 @@
 | ACP bind, prompt, cancel, replay | `packages/acp/src/index.ts` | `packages/acp/test/gateway.test.ts` |
 | Module dependency and public contract resolution | `packages/framework/src/application` | module registry tests |
 | Remote business-system integration | `packages/framework/src/integration/http-domain.ts` | `packages/framework/test/http-domain.test.ts` |
+| Review-to-adoption Operating Model seam | `packages/framework/src/application/ports.ts`, `packages/framework/src/application/runtime.ts` | `packages/framework/test/runtime.test.ts` |
 | Workspace scope and secret protection | `packages/harness-pi/src/workspace.ts` | workspace tests |
 | Generated standalone app | `templates/default`, `packages/create-airic` | `scripts/verify-packed-app.mjs` |
 
@@ -40,6 +41,8 @@
 - ACP is an interaction projection. Business data, command receipts, review, approval and export remain owned by module Application Services and their repositories.
 - `createHttpDomainProvider` adapts the `airic-domain/v1` protocol to the existing inward `DomainProvider` port. Its host-owned `requestHeaders` signs serialized transport requests only; it carries Work/Action correlation and expected releases, but never makes tool-input identity authoritative. Network loss, timeout and unparseable replies are `unknown` and require inspection/reconciliation.
 - `TurnContextRef` is traceable UI navigation context. It reaches the ContextEnvelope as a non-authoritative hint; it cannot change the Work target, identity or authorization.
+- Business systems own Business State, deterministic Cognitive Interfaces and typed Capability APIs. Airic owns Work/Action/trace and never turns a projection into authoritative business data; see `docs/agent-business-state-boundary.md`.
+- Reflection is advisory. `OperatingModelChangePort` is the only optional adoption seam and records `reflection.adopted` only after a host adapter supplies an actual applied reference and validation evidence. There is intentionally no default adapter or Operating Model asset lifecycle in Framework.
 - The Application host owns document extraction via `RuntimeOptions.extractEvidence`; Airic stores the original and text projection as Work-bound evidence and limits Agent reads to a locator on the same Work. This is not a business attachment or approval.
 - Module Smith writes only its host-scoped target module. The host owns fixed checks; the Agent cannot use a general shell or Git write tools.
 - `scripts/architecture-check.mjs` and package tests enforce these boundaries.

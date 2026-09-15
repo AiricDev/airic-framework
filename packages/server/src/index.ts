@@ -2,7 +2,7 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, resolve, sep } from "node:path";
-import type { AiricRuntime, CreateWorkInput, TraceEvent, TrustedCallContext, Work, WorkTypeRef } from "@airic/framework";
+import { OperatingModelChangeNotConfigured, type AiricRuntime, type CreateWorkInput, type TraceEvent, type TrustedCallContext, type Work, type WorkTypeRef } from "@airic/framework";
 
 export type AiricAccessResource =
   | { kind: "work"; work: Work; action: "read" | "prompt" | "complete" | "interrupt" | "reflect" | "upload" }
@@ -140,7 +140,7 @@ export function createAiricHttpHandler(options: AiricHttpHandlerOptions): AiricH
           }
         }
         return json(response, 404, { error: "Airic route not found", code: "RouteNotFound" });
-      } catch (error) { return json(response, error instanceof AiricHttpError ? error.status : error instanceof SyntaxError ? 400 : error instanceof Error && error.message.startsWith("WorkBusy:") ? 409 : 400, { error: error instanceof Error ? error.message : String(error), code: error instanceof AiricHttpError ? error.code : error instanceof SyntaxError ? "InvalidJson" : error instanceof Error && error.message.startsWith("WorkBusy:") ? "WorkBusy" : "RequestFailed" }); }
+      } catch (error) { return json(response, error instanceof AiricHttpError ? error.status : error instanceof OperatingModelChangeNotConfigured ? 501 : error instanceof SyntaxError ? 400 : error instanceof Error && error.message.startsWith("WorkBusy:") ? 409 : 400, { error: error instanceof Error ? error.message : String(error), code: error instanceof AiricHttpError ? error.code : error instanceof OperatingModelChangeNotConfigured ? error.code : error instanceof SyntaxError ? "InvalidJson" : error instanceof Error && error.message.startsWith("WorkBusy:") ? "WorkBusy" : "RequestFailed" }); }
     },
     async close() { if (closed) return; closed = true; unsubscribe(); for (const client of clients) client.response.end(); clients.clear(); },
   };
