@@ -16,24 +16,23 @@ export class DemoHarness implements AgentHarness {
       return { text: "This onboarding assistant needs the configured Pi harness and model before it can inspect or change project files." };
     }
     if (input.envelope.workType.workTypeId === "reflection") {
-      const workInput = JSON.parse(input.envelope.observations.find((item) => item.id === "work")!.content) as { input: { sourceWorkId: string } };
+      const workInput = JSON.parse(input.envelope.observations.find((item) => item.id === "work")!.content) as { sourceWorks: readonly { workId: string }[] };
+      const sourceWorkId = workInput.sourceWorks[0]?.workId;
+      if (!sourceWorkId) return { text: "Bind a source trajectory before starting Reflection." };
       const readTrace = requireTool(input.tools, "airic_read_work_trace");
-      const saveCandidate = requireTool(input.tools, "airic_record_reflection_candidate");
+      const saveCandidate = requireTool(input.tools, "airic_record_operating_model_candidate");
       const complete = requireTool(input.tools, "airic_complete_work");
-      const events = await readTrace.invoke({ workId: workInput.input.sourceWorkId, reason: "Identify whether the operating model was delivered before domain rejection" }, this.#next()) as { eventId: string; type: string; payload: unknown }[];
+      const events = await readTrace.invoke({ workId: sourceWorkId, reason: "Identify whether the operating model was delivered before domain rejection" }, this.#next()) as { eventId: string; type: string; payload: unknown }[];
       const context = [...events].reverse().find((event) => event.type === "context.assembled")?.payload as { operatingModelRevision?: { revisionId: string; contentDigest: string } } | undefined;
       const candidate = {
-        targetKind: "operating-model",
-        targetPath: "process.md",
         target: { moduleId: "cases", workTypeId: "case-assistance" },
-        baseCommit: context?.operatingModelRevision?.revisionId,
-        baseContentDigest: context?.operatingModelRevision?.contentDigest ?? "unknown",
-        diff: JSON.stringify({ documents: { "process.md": "Read the case before any update. Ask for the customer name and email in either order. When a customer asks to submit early, name each missing fact before retrying readiness. Never claim ready until the Domain command commits." } }),
+        baseRevision: context?.operatingModelRevision,
+        changeSet: { upsert: [{ path: "process.md", content: "Read the case before any update. Ask for the customer name and email in either order. When a customer asks to submit early, name each missing fact before retrying readiness. Never claim ready until the Domain command commits." }], delete: [] },
         rationale: "The trace includes a domain rejection and the candidate makes the recovery guidance explicit without relaxing the invariant.",
-        evidenceEventIds: events.filter((event) => event.type === "action.rejected" || event.type === "context.delivered").map((event) => event.eventId),
+        evidenceRefs: events.filter((event) => event.type === "action.rejected" || event.type === "context.delivered").map((event) => ({ workId: sourceWorkId, eventId: event.eventId })),
       } as const;
       const object = await saveCandidate.invoke(candidate, this.#next());
-      await complete.invoke({ result: { type: "reflection", candidate: object, sourceWorkId: workInput.input.sourceWorkId } }, this.#next());
+      await complete.invoke({ result: { type: "reflection", candidate: object, sourceWorkId } }, this.#next());
       return { text: "I reviewed the canonical trace and produced an operating-model candidate for human review.", result: object };
     }
     const get = requireTool(input.tools, "domain_case_get");

@@ -54,12 +54,25 @@ function fixture(commandMode: "committed" | "rejected" | "unknown" = "committed"
   const operatingModels = new MemoryOperatingModelRepository(definitions.definitions);
   const runtime = new AiricRuntime({
     store: new MemoryRuntimeStore(), harness,
-    modules, operatingModels, operatingModelLearning: operatingModels,
+    modules, operatingModels, operatingModelAuthoring: operatingModels,
+    operatingModelAuthoringWorkTypes: { reflection: [{ moduleId: "development", workTypeId: "reflection" }], smith: [] },
   });
   return { runtime, harness, definitions, domain, modules, operatingModels, commandInvocations: () => commandInvocations };
 }
 
 describe("AiricRuntime", () => {
+  it("binds Reflection trajectories append-only and rechecks access before each trace read", async () => {
+    const { runtime, harness } = fixture(); await runtime.open();
+    const source = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Source" }, creator);
+    const reflection = await runtime.createWork({ moduleId: "development", workTypeId: "reflection", objective: "Reflect", sourceWorks: [{ workId: source.id }] }, creator);
+    expect(reflection.sourceWorks).toEqual([{ workId: source.id }]);
+    await expect(runtime.attachSourceWork(reflection.id, source.id, creator)).rejects.toThrow("Duplicate");
+    await expect(runtime.attachSourceWork(reflection.id, reflection.id, creator)).rejects.toThrow("Duplicate or self");
+    harness.enqueue({ call: { tool: "airic_read_work_trace", input: { workId: source.id, reason: "Inspect outcome" }, requestId: "trace" } });
+    await runtime.sendMessage(reflection.id, "Read source", creator);
+    expect(runtime.getTrace(reflection.id).some((event) => event.type === "context.retrieved" && (event.payload as { source?: string }).source === "trace")).toBe(true);
+  });
+
   it("keeps host-extracted evidence Work-bound and exposes only requested blocks", async () => {
     const { runtime, harness } = fixture(); await runtime.open();
     runtime.options.extractEvidence = async () => ({ blocks: [{ locator: "page:1:part:1", text: "Equipment details" }], warnings: ["Images were not read"] });

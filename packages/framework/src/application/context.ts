@@ -53,8 +53,8 @@ export function assembleContext(input: { work: Work; definition: WorkDefinition;
   const observations: ContextBlock[] = [{
     id: "work",
     title: "Current work",
-    content: JSON.stringify({ objective: input.work.objective, input: input.work.input, status: input.work.status }),
-    digest: hash(JSON.stringify({ objective: input.work.objective, input: input.work.input, status: input.work.status })),
+    content: JSON.stringify({ objective: input.work.objective, input: input.work.input, status: input.work.status, sourceWorks: input.work.sourceWorks }),
+    digest: hash(JSON.stringify({ objective: input.work.objective, input: input.work.input, status: input.work.status, sourceWorks: input.work.sourceWorks })),
     authority: "user",
   }];
   const capabilityCatalog = input.domains.flatMap((domain) => domain.capabilities.map((capability) => ({

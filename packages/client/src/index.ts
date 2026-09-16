@@ -6,6 +6,7 @@ export interface WorkDto {
   status: "open" | "completed" | "cancelled";
   workType: { moduleId: string; workTypeId: string };
   domainBindings: readonly unknown[];
+  sourceWorks: readonly { workId: string }[];
   selectedContent: readonly string[];
   result?: unknown;
   revision: number;
@@ -20,8 +21,10 @@ export interface WorkspaceStatusDto { gitHead?: string; dirty: boolean; status: 
 export interface HarnessCapabilitiesDto { resume: boolean; interrupt: boolean; contextHook: boolean; compactionTrace: boolean; workspaceWorkTypes?: string[] }
 export interface AgentConnectionDto { url: string; cwd: string; sessionId?: string }
 export interface OperatingModelRevisionDto { revisionId: string; contentDigest: string }
-export interface OperatingModelSnapshotDto { target: { moduleId: string; workTypeId: string }; ref: OperatingModelRevisionDto; parentRef?: OperatingModelRevisionDto; manifest: unknown; documents: readonly { path: string; content: string; digest: string }[]; sourceRef?: string }
-export interface OperatingModelProposalDto { proposalId: string; target: { moduleId: string; workTypeId: string }; baseRevision: OperatingModelRevisionDto; candidateDigest: string; patch: string; rationale: string; evidenceRefs: readonly { workId: string; eventId: string }[]; validationPlan: unknown; proposer: { kind: "human" | "reflection"; id: string }; status: string; supersedesProposalId?: string }
+export interface OperatingModelSnapshotDto { target: { moduleId: string; workTypeId: string }; ref: OperatingModelRevisionDto; parentRef?: OperatingModelRevisionDto; files: readonly { path: string; content: string; digest: string }[]; sourceRef?: string }
+export interface OperatingModelChangeSetDto { upsert: readonly { path: string; content: string }[]; delete: readonly string[] }
+export interface OperatingModelProposalDto { proposalId: string; target: { moduleId: string; workTypeId: string }; baseRevision: OperatingModelRevisionDto; candidateRevision: OperatingModelRevisionDto; candidateDigest: string; changeSet: OperatingModelChangeSetDto; rationale: string; evidenceRefs: readonly { workId: string; eventId: string }[]; validation: { receiptDigest: string }; provenance: unknown; proposer: { kind: "human" | "reflection" | "smith"; id: string }; status: string; supersedesProposalId?: string }
+export interface OperatingModelProposalDetailDto { proposal: OperatingModelProposalDto; candidate: OperatingModelSnapshotDto; review?: { reviewId: string; reviewDigest: string; decision: "approved" | "rejected" }; diff: OperatingModelChangeSetDto }
 export interface OperatingModelOperationDto { operationId: string; status: "committed" | "pending" | "unknown" | "rejected"; result?: unknown; error?: { code: string; message: string; details?: unknown } }
 export interface WorkEvidenceDto { digest: string; size: number; extraction?: { digest: string; blocks: number; warnings: readonly string[] } }
 export interface AiricErrorBody { error: string; code?: string; details?: unknown }
@@ -37,7 +40,7 @@ export interface AiricClientOptions {
   eventSource?: (url: string) => EventSourceLike;
   reconnectDelayMs?: number;
 }
-export interface CreateWorkInput { moduleId: string; workTypeId: string; objective: string; input?: unknown }
+export interface CreateWorkInput { moduleId: string; workTypeId: string; objective: string; input?: unknown; sourceWorks?: readonly { workId: string }[] }
 
 export class AiricClient {
   readonly baseUrl: string;
@@ -60,16 +63,18 @@ export class AiricClient {
   interrupt(id: string): Promise<{ interrupted: boolean }> { return this.#post(`/works/${encodeURIComponent(id)}/interrupt`, {}); }
   complete(id: string, result: unknown): Promise<WorkDto> { return this.#post(`/works/${encodeURIComponent(id)}/complete`, { result }); }
   createReflection(input: CreateWorkInput): Promise<WorkDto> { return this.createWork(input); }
+  attachSourceWork(reflectionWorkId: string, sourceWorkId: string): Promise<WorkDto> { return this.#post(`/works/${encodeURIComponent(reflectionWorkId)}/sources`, { workId: sourceWorkId }); }
   listWorkTypes(): Promise<WorkTypeSummaryDto[]> { return this.#get("/work-types"); }
   getWorkType(moduleId: string, workTypeId: string): Promise<WorkTypeFilesDto> { return this.#get(`/work-types/${encodeURIComponent(moduleId)}/${encodeURIComponent(workTypeId)}`); }
   getCapabilities(): Promise<HarnessCapabilitiesDto> { return this.#get("/capabilities"); }
   getWorkspace(): Promise<WorkspaceStatusDto> { return this.#get("/workspace"); }
   listOperatingModels(): Promise<{ moduleId: string; workTypeId: string }[]> { return this.#get("/operating-models"); }
   getActiveOperatingModel(moduleId: string, workTypeId: string): Promise<OperatingModelSnapshotDto> { return this.#get(`/operating-models/${encodeURIComponent(moduleId)}/${encodeURIComponent(workTypeId)}/active`); }
+  listOperatingModelRevisions(moduleId: string, workTypeId: string): Promise<OperatingModelRevisionDto[]> { return this.#get(`/operating-models/${encodeURIComponent(moduleId)}/${encodeURIComponent(workTypeId)}/revisions`); }
   listOperatingModelProposals(): Promise<OperatingModelProposalDto[]> { return this.#get("/operating-model-proposals"); }
-  getOperatingModelProposal(proposalId: string): Promise<OperatingModelProposalDto | undefined> { return this.#get(`/operating-model-proposals/${encodeURIComponent(proposalId)}`); }
-  proposeOperatingModel(input: Omit<OperatingModelProposalDto, "proposalId" | "candidateDigest" | "status" | "proposer"> & { operationId: string }): Promise<OperatingModelOperationDto> { return this.#post("/operating-model-proposals", input); }
-  reviewOperatingModel(proposalId: string, input: { operationId: string; proposalDigest: string; decision: "approved" | "rejected"; comment?: string; validationRequirements: unknown }): Promise<OperatingModelOperationDto> { return this.#post(`/operating-model-proposals/${encodeURIComponent(proposalId)}/review`, input); }
+  getOperatingModelProposal(proposalId: string): Promise<OperatingModelProposalDetailDto | undefined> { return this.#get(`/operating-model-proposals/${encodeURIComponent(proposalId)}`); }
+  proposeOperatingModel(input: { operationId: string; target: { moduleId: string; workTypeId: string }; baseRevision: OperatingModelRevisionDto; changeSet: OperatingModelChangeSetDto; rationale: string; evidenceRefs: readonly { workId: string; eventId: string }[]; provenance: unknown; supersedesProposalId?: string }): Promise<OperatingModelOperationDto> { return this.#post("/operating-model-proposals", input); }
+  reviewOperatingModel(proposalId: string, input: { operationId: string; proposalDigest: string; validationReceiptDigest: string; decision: "approved" | "rejected"; comment?: string }): Promise<OperatingModelOperationDto> { return this.#post(`/operating-model-proposals/${encodeURIComponent(proposalId)}/review`, input); }
   rejectOperatingModel(proposalId: string, input: { operationId: string; comment?: string }): Promise<OperatingModelOperationDto> { return this.#post(`/operating-model-proposals/${encodeURIComponent(proposalId)}/reject`, input); }
   adoptOperatingModel(proposalId: string, input: { operationId: string; expectedActiveRevision: OperatingModelRevisionDto; proposalDigest: string; reviewId: string; reviewDigest: string }): Promise<OperatingModelOperationDto> { return this.#post(`/operating-model-proposals/${encodeURIComponent(proposalId)}/adopt`, input); }
   inspectOperatingModelOperation(operationId: string): Promise<OperatingModelOperationDto | undefined> { return this.#get(`/operating-model-operations/${encodeURIComponent(operationId)}`); }

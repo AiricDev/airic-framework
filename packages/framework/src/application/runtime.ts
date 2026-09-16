@@ -4,7 +4,7 @@ import { createWork, reviseWork, type Work } from "../domain/work.js";
 import { bindingRef, DomainInvocationError, type CommandReceipt, type DomainProvider, type TrustedCallContext } from "../integration/contracts.js";
 import { assembleContext, hash, type TurnContextRef } from "./context.js";
 import type { AgentHarness, HarnessTool, LiveWorkEvent, RuntimeEvent, RuntimeStore, TraceEvent, WorkEvidenceExtraction } from "./ports.js";
-import type { OperatingModelLearningPort, OperatingModelRevisionRef, OperatingModelRuntimePort } from "./operating-model.js";
+import type { OperatingModelAuthoringPort, OperatingModelChangeSet, OperatingModelId, OperatingModelRevisionRef, OperatingModelRuntimePort } from "./operating-model.js";
 import { loadWorkDefinition, type WorkDefinition } from "./work-definition.js";
 import type { ModuleRegistry } from "./module.js";
 
@@ -18,7 +18,9 @@ export interface RuntimeOptions {
   onTraceRead?: (actor: TrustedCallContext["actor"], work: Work, reason: string) => Promise<void>;
   extractEvidence?: (input: { name: string; mediaType: string; content: Uint8Array }) => Promise<WorkEvidenceExtraction>;
   operatingModels: OperatingModelRuntimePort;
-  operatingModelLearning?: OperatingModelLearningPort;
+  operatingModelAuthoring?: OperatingModelAuthoringPort;
+  /** Host-owned allowlist. Work Definition content cannot grant authoring tools. */
+  operatingModelAuthoringWorkTypes?: { reflection: readonly Work["workType"][]; smith: readonly Work["workType"][] };
 }
 
 export interface CreateWorkInput {
@@ -26,6 +28,7 @@ export interface CreateWorkInput {
   workTypeId: string;
   objective: string;
   input?: unknown;
+  sourceWorks?: readonly { workId: string }[];
 }
 
 export class AiricRuntime {
@@ -76,13 +79,28 @@ export class AiricRuntime {
     const availableCapabilities = new Set(domains.flatMap((domain) => domain.capabilities.map((capability) => capability.id)));
     const unavailableCapabilities = definition.manifest.capabilities.allowed.filter((id) => !availableCapabilities.has(id));
     if (unavailableCapabilities.length) throw new Error(`Definition allows unavailable capabilities: ${unavailableCapabilities.join(", ")}`);
+    const sourceWorks = input.sourceWorks ?? [];
+    if (sourceWorks.length && !this.#isReflectionRef(resolved.ref)) throw new Error("Only a trusted Reflection WorkType may bind source Works");
+    const seenSources = new Set<string>();
+    for (const source of sourceWorks) {
+      if (!source.workId || seenSources.has(source.workId)) throw new Error("Duplicate source Work"); seenSources.add(source.workId);
+      const sourceWork = this.#requireWork(source.workId); await this.#authorize(actor, sourceWork, "read-trace");
+    }
     const work = createWork({
       id: this.#id(), createdBy: actor.id, objective: input.objective, input: input.input ?? {}, workType: resolved.ref,
-      domainBindings: domains.map(bindingRef), now: this.#now().toISOString(),
+      domainBindings: domains.map(bindingRef), sourceWorks, now: this.#now().toISOString(),
     });
     await this.#persist([{ kind: "work.saved", work }]);
     await this.#traceEvent(work.id, "work.created", "user", { objective: work.objective, workType: work.workType, domainBindings: work.domainBindings });
     return work;
+  }
+
+  async attachSourceWork(workId: string, sourceWorkId: string, actor: TrustedCallContext["actor"]): Promise<Work> {
+    const work = this.#requireOpenWork(workId); if (!this.#isReflection(work)) throw new Error("Only a trusted Reflection Work may bind source Works");
+    if (work.id === sourceWorkId || work.sourceWorks.some((source) => source.workId === sourceWorkId)) throw new Error("Duplicate or self source Work");
+    const source = this.#requireWork(sourceWorkId); await this.#authorize(actor, work, "prompt"); await this.#authorize(actor, source, "read-trace");
+    const revised = reviseWork(work, { sourceWorks: [...work.sourceWorks, { workId: sourceWorkId }] }, this.#now().toISOString());
+    await this.#persist([{ kind: "work.saved", work: revised }]); await this.#traceEvent(workId, "context.source-work-attached", actor.id, { sourceWorkId }); return revised;
   }
 
   async sendMessage(workId: string, message: string, actor: TrustedCallContext["actor"], turnContextRefs?: readonly TurnContextRef[]): Promise<{ text: string; result?: unknown }> {
@@ -214,41 +232,40 @@ export class AiricRuntime {
     return completed;
   }
 
-  async recordReflectionCandidate(workId: string, candidate: {
-    targetKind: "operating-model" | "domain" | "associated";
-    targetPath: string;
-    target?: { moduleId: string; workTypeId: string };
-    baseCommit?: string;
-    baseContentDigest: string;
-    diff: string;
+  async recordOperatingModelCandidate(workId: string, candidate: {
+    target: OperatingModelId;
+    baseRevision: OperatingModelRevisionRef;
+    changeSet: OperatingModelChangeSet;
     rationale: string;
-    evidenceEventIds: readonly string[];
-    validation?: unknown;
+    evidenceRefs: readonly { workId: string; eventId: string }[];
+    supersedesProposalId?: string;
   }): Promise<{ proposalId: string; candidateDigest: string }> {
     const work = this.#requireOpenWork(workId);
-    const definition = await this.#definitionFor(work);
-    if (!definition.manifest.documents.some((document) => document.role === "reflection")) throw new Error("Candidate creation requires a Reflection Work Definition");
-    const bound = (work.input as { operatingModelTarget?: { moduleId?: string; workTypeId?: string; path?: string; baseContentDigest?: string } }).operatingModelTarget;
-    if (bound && (candidate.target?.moduleId !== bound.moduleId || candidate.target?.workTypeId !== bound.workTypeId || candidate.targetPath !== bound.path || candidate.baseContentDigest !== bound.baseContentDigest)) {
-      throw new Error("ReflectionCandidateTargetMismatch");
+    const kind = this.#isReflection(work) ? "reflection" : this.#isSmith(work) ? "smith" : undefined;
+    if (!kind) throw new Error("Candidate creation requires a trusted Reflection or Operating Model Smith Work");
+    const bound = (work.input as { operatingModelTarget?: { moduleId?: string; workTypeId?: string; baseRevision?: OperatingModelRevisionRef } }).operatingModelTarget;
+    if (kind === "smith" && (!bound || bound.moduleId !== candidate.target.moduleId || bound.workTypeId !== candidate.target.workTypeId || !bound.baseRevision || bound.baseRevision.contentDigest !== candidate.baseRevision.contentDigest || bound.baseRevision.revisionId !== candidate.baseRevision.revisionId)) throw new Error("OperatingModelSmithTargetMismatch");
+    if (kind === "reflection") {
+      const allowed = new Set(work.sourceWorks.map((source) => source.workId));
+      for (const evidence of candidate.evidenceRefs) {
+        if (!allowed.has(evidence.workId) || !this.getTrace(evidence.workId).some((event) => event.eventId === evidence.eventId)) throw new Error("ReflectionEvidenceMismatch");
+      }
     }
-    if (!candidate.target?.moduleId || !candidate.target.workTypeId) throw new Error("Operating Model candidate is missing its target");
-    const port = this.options.operatingModelLearning;
-    if (!port) throw new Error("OperatingModelLearningNotConfigured");
-    const result = await port.proposeFromReflection({
-      operationId: `reflection:${workId}:${hash(candidate.diff)}`,
-      sourceWorkId: workId,
-      target: candidate.target,
-      baseRevision: { revisionId: candidate.baseCommit ?? candidate.baseContentDigest, contentDigest: candidate.baseContentDigest },
-      patch: candidate.diff,
-      rationale: candidate.rationale,
-      evidenceRefs: candidate.evidenceEventIds.map((eventId) => ({ workId, eventId })),
-      validationPlan: candidate.validation ?? {},
-      proposerId: "agent",
-    });
+    const port = this.options.operatingModelAuthoring; if (!port) throw new Error("OperatingModelAuthoringNotConfigured");
+    const authoringRevision = this.#turnRevisions.get(workId) ?? await this.options.operatingModels.resolveActive(work.workType);
+    const trajectoryRevisions = work.sourceWorks.map((source) => ({ workId: source.workId, revisions: this.#trajectoryRevisions(source.workId) }));
+    const result = await port.propose({ operationId: `${kind}:${workId}:${hash(JSON.stringify(candidate.changeSet))}`, target: candidate.target, baseRevision: candidate.baseRevision, changeSet: candidate.changeSet, rationale: candidate.rationale, evidenceRefs: candidate.evidenceRefs, provenance: { authoringWorkId: workId, authoringRevision, trajectoryRevisions }, proposer: { kind, id: "agent" }, ...(candidate.supersedesProposalId ? { supersedesProposalId: candidate.supersedesProposalId } : {}) });
     if (result.status !== "committed" || !("proposalId" in result.result) || !("candidateDigest" in result.result)) throw new Error(result.status === "rejected" ? result.error.message : "Operating Model proposal outcome is unknown");
-    await this.#traceEvent(workId, "reflection.proposed", "agent", { proposalId: result.result.proposalId, candidateDigest: result.result.candidateDigest, evidenceEventIds: candidate.evidenceEventIds });
+    await this.#traceEvent(workId, "reflection.proposed", "agent", { proposalId: result.result.proposalId, candidateDigest: result.result.candidateDigest, evidenceRefs: candidate.evidenceRefs, authoringRevision, trajectoryRevisions });
     return { proposalId: result.result.proposalId, candidateDigest: result.result.candidateDigest };
+  }
+
+  /** Compatibility shim for older hosts; new callers must use a structured change set. */
+  async recordReflectionCandidate(workId: string, raw: { target?: OperatingModelId; targetPath?: string; diff?: string; rationale?: string; evidenceEventIds?: readonly string[] }): Promise<{ proposalId: string; candidateDigest: string }> {
+    const target = raw.target; if (!target || !raw.targetPath || raw.diff === undefined) throw new Error("Reflection candidate patches are no longer supported; submit an OperatingModelChangeSet");
+    const baseRevision = await this.options.operatingModels.resolveActive(target); const base = await this.options.operatingModels.readRevision(target, baseRevision); const current = base.files.find((file) => file.path === raw.targetPath)?.content;
+    if (current === undefined) throw new Error("Reflection candidate path is not present in the active package");
+    return this.recordOperatingModelCandidate(workId, { target, baseRevision, changeSet: { upsert: [{ path: raw.targetPath, content: `${current}\n${raw.diff}` }], delete: [] }, rationale: raw.rationale ?? "", evidenceRefs: (raw.evidenceEventIds ?? []).map((eventId) => ({ workId, eventId })) });
   }
 
   async attachEvidence(workId: string, input: { name: string; mediaType: string; content: Uint8Array }): Promise<{ digest: string; size: number; extraction?: { digest: string; blocks: number; warnings: readonly string[] } }> {
@@ -313,7 +330,12 @@ export class AiricRuntime {
       ] satisfies HarnessTool[] : []),
       { name: "airic_read_work_document", description: "Load an on-demand Work Definition document for the next reasoning step.", inputSchema: { type: "object", properties: { id: { type: "string" }, reason: { type: "string" } }, required: ["id", "reason"] }, invoke: async (value) => { const input = value as { id: string; reason: string }; const revised = await this.selectContent(work.id, input.id, input.reason); const current = await this.#definitionFor(revised); const doc = current.documents.get(input.id); if (!doc) throw new Error(`Work Definition document ${input.id} changed before it could be read`); return { id: doc.id, content: doc.content, digest: doc.digest, workRevision: revised.revision }; } },
       { name: "airic_read_domain_source", description: "Read reviewed domain source tied to the active release.", inputSchema: { type: "object", properties: { domainId: { type: "string" }, path: { type: "string" }, symbol: { type: "string" }, reason: { type: "string" } }, required: ["domainId", "path", "reason"] }, invoke: async (value) => { const input = value as { domainId: string; path: string; symbol?: string; reason: string }; const module = domains.find((candidate) => candidate.id === input.domainId); if (!module?.readSource) throw new Error(`Domain source is unavailable for ${input.domainId}`); const result = await module.readSource({ path: input.path, ...(input.symbol ? { symbol: input.symbol } : {}) }); await this.#traceEvent(work.id, "context.retrieved", "agent", { source: "domain", domainId: module.id, release: module.release, locator: result.locator, digest: hash(result.content), reason: input.reason }); return result; } },
-      { name: "airic_read_work_trace", description: "Read canonical trace for this Work, or the source Work named by a Reflection Work.", inputSchema: { type: "object", properties: { workId: { type: "string" }, reason: { type: "string" } }, required: ["reason"] }, invoke: async (value) => { const input = value as { workId?: string; reason: string }; const boundSource = (work.input as { sourceWorkId?: string }).sourceWorkId; const sourceWorkId = work.workType.workTypeId === "reflection" ? String(boundSource ?? work.id) : work.id; if (input.workId && input.workId !== sourceWorkId) throw new Error("ReflectionSourceMismatch"); const sourceWork = this.#requireWork(sourceWorkId); await this.#authorize(actor, sourceWork, "read-trace"); await this.options.onTraceRead?.(actor, sourceWork, input.reason); const events = this.getTrace(sourceWorkId); if (!events.length) throw new Error(`No readable trace for Work ${sourceWorkId}`); await this.#traceEvent(work.id, "context.retrieved", "agent", { source: "trace", sourceWorkId, eventCount: events.length, reason: input.reason }); return events; } },
+      { name: "airic_read_work_trace", description: "Read this Work trace, or a trajectory explicitly bound to a trusted Reflection Work.", inputSchema: { type: "object", properties: { workId: { type: "string" }, reason: { type: "string" } }, required: ["reason"] }, invoke: async (value) => { const input = value as { workId?: string; reason: string }; const sourceWorkId = input.workId ?? work.id; if (sourceWorkId !== work.id && (!this.#isReflection(work) || !work.sourceWorks.some((source) => source.workId === sourceWorkId))) throw new Error("ReflectionSourceMismatch"); const sourceWork = this.#requireWork(sourceWorkId); await this.#authorize(actor, sourceWork, "read-trace"); await this.options.onTraceRead?.(actor, sourceWork, input.reason); const events = this.getTrace(sourceWorkId); if (!events.length) throw new Error(`No readable trace for Work ${sourceWorkId}`); await this.#traceEvent(work.id, "context.retrieved", "agent", { source: "trace", sourceWorkId, eventCount: events.length, reason: input.reason }); return events; } },
+      ...(this.#isAuthoring(work) ? [
+        { name: "airic_list_operating_models", description: "List installation-owned Operating Models available to this authoring Work.", inputSchema: { type: "object", properties: {}, additionalProperties: false }, invoke: async () => this.options.operatingModels.listAvailableModels() },
+        { name: "airic_read_operating_model", description: "Read one immutable Operating Model revision before proposing a candidate.", inputSchema: { type: "object", properties: { moduleId: { type: "string" }, workTypeId: { type: "string" }, revisionId: { type: "string" }, contentDigest: { type: "string" } }, required: ["moduleId", "workTypeId"] }, invoke: async (value) => { const input = value as { moduleId: string; workTypeId: string; revisionId?: string; contentDigest?: string }; const target = { moduleId: input.moduleId, workTypeId: input.workTypeId }; const active = await this.options.operatingModels.resolveActive(target); const ref = input.revisionId && input.contentDigest ? { revisionId: input.revisionId, contentDigest: input.contentDigest } : active; const snapshot = await this.options.operatingModels.readRevision(target, ref); await this.#traceEvent(work.id, "context.retrieved", "agent", { source: "operating-model", target, ref }); return snapshot; } },
+        { name: "airic_record_operating_model_candidate", description: "Submit a structure-validated Operating Model change set for human review.", inputSchema: { type: "object", properties: { target: { type: "object" }, baseRevision: { type: "object" }, changeSet: { type: "object" }, rationale: { type: "string" }, evidenceRefs: { type: "array" }, supersedesProposalId: { type: "string" } }, required: ["target", "baseRevision", "changeSet", "rationale", "evidenceRefs"] }, invoke: async (value) => this.recordOperatingModelCandidate(work.id, value as Parameters<AiricRuntime["recordOperatingModelCandidate"]>[1]) },
+      ] satisfies HarnessTool[] : []),
       { name: "airic_record_reflection_candidate", description: "Store a reviewable candidate diff linked to trace evidence.", inputSchema: { type: "object", properties: { targetKind: { enum: ["operating-model", "domain", "associated"] }, targetPath: { type: "string" }, target: { type: "object", properties: { moduleId: { type: "string" }, workTypeId: { type: "string" } }, required: ["moduleId", "workTypeId"] }, baseCommit: { type: "string" }, baseContentDigest: { type: "string" }, diff: { type: "string" }, rationale: { type: "string" }, evidenceEventIds: { type: "array", items: { type: "string" } } }, required: ["targetKind", "targetPath", "baseContentDigest", "diff", "rationale", "evidenceEventIds"] }, invoke: async (value) => { if (work.workType.workTypeId !== "reflection") throw new Error("Reflection candidates can only be produced by a Reflection Work"); return this.recordReflectionCandidate(work.id, value as Parameters<AiricRuntime["recordReflectionCandidate"]>[1]); } },
       { name: "airic_complete_work", description: "Complete the Work with a structured result after required domain effects are confirmed.", inputSchema: { type: "object", properties: { result: {} }, required: ["result"] }, invoke: async (value) => this.completeWork(work.id, (value as { result: unknown }).result) },
     ];
@@ -404,6 +426,11 @@ export class AiricRuntime {
     return { definition, envelope };
   }
   #requireWork(id: string): Work { return this.#works.get(id) ?? fail(`Unknown Work ${id}`); }
+  #isReflectionRef(ref: Work["workType"]): boolean { return this.options.operatingModelAuthoringWorkTypes?.reflection.some((item) => item.moduleId === ref.moduleId && item.workTypeId === ref.workTypeId) ?? false; }
+  #isReflection(work: Work): boolean { return this.#isReflectionRef(work.workType); }
+  #isSmith(work: Work): boolean { return this.options.operatingModelAuthoringWorkTypes?.smith.some((item) => item.moduleId === work.workType.moduleId && item.workTypeId === work.workType.workTypeId) ?? false; }
+  #isAuthoring(work: Work): boolean { return this.#isReflection(work) || this.#isSmith(work); }
+  #trajectoryRevisions(workId: string): readonly OperatingModelRevisionRef[] { const values = this.getTrace(workId).filter((event) => event.type === "context.assembled").map((event) => (event.payload as { operatingModelRevision?: OperatingModelRevisionRef }).operatingModelRevision).filter((ref): ref is OperatingModelRevisionRef => Boolean(ref)); return values.filter((ref, index) => values.findIndex((value) => value.revisionId === ref.revisionId && value.contentDigest === ref.contentDigest) === index); }
   #requireOpenWork(id: string): Work { const work = this.#requireWork(id); if (work.status !== "open") throw new Error(`Work ${id} is ${work.status}`); return work; }
   async #saveAction(action: Action, type: TraceEvent["type"], payload: unknown): Promise<void> { await this.#persist([{ kind: "action.saved", action }]); await this.#traceEvent(action.workId, type, "runtime", payload, action.id); }
   async #traceEvent(workId: string, type: TraceEvent["type"], actor: string, payload: unknown, actionId?: string): Promise<void> {
@@ -412,7 +439,7 @@ export class AiricRuntime {
   }
   async #persist(events: readonly RuntimeEvent[]): Promise<void> { await this.options.store.append(events); for (const event of events) this.#apply(event); }
   #apply(event: RuntimeEvent): void {
-    if (event.kind === "work.saved") this.#works.set(event.work.id, event.work);
+    if (event.kind === "work.saved") this.#works.set(event.work.id, { ...event.work, sourceWorks: event.work.sourceWorks ?? [] });
     else if (event.kind === "action.saved") this.#actions.set(event.action.id, event.action);
     else { this.#trace.push(event.event); for (const listener of this.#listeners) listener(event.event); }
   }

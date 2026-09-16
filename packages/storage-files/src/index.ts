@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { cp, lstat, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, normalize, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import type { ModuleSource, OperatingModelAdoption, OperatingModelId, OperatingModelOperation, OperatingModelProposal, OperatingModelRepository, OperatingModelRevisionRef, OperatingModelReview, OperatingModelSnapshot, RuntimeEvent, RuntimeStore, WorkTypeRef } from "@airic/framework";
+import { parseTarget, rejected, sameRef, snapshotKey, targetKey, type ModuleSource, type OperatingModelAdoption, type OperatingModelId, type OperatingModelOperation, type OperatingModelProposal, type OperatingModelReview, type OperatingModelSnapshot, type OperatingModelStorePort, type OperatingModelRevisionRef, type RuntimeEvent, type RuntimeStore, type WorkTypeRef } from "@airic/framework";
 
 interface CommitBody {
   format: "airic-journal-v2";
@@ -230,7 +230,7 @@ export class DirectoryModuleSource implements ModuleSource {
  * read as the active model and is never written during proposal or adoption.
  * Git object IDs are intentionally absent from the public Framework contract.
  */
-export class GitOperatingModelRepository implements OperatingModelRepository {
+export class GitOperatingModelRepository implements OperatingModelStorePort {
   readonly #root: string; readonly #ref = "refs/airic/operating-model/state";
   #ready: Promise<void> | undefined;
   constructor(root: string) { this.#root = resolve(root); }
@@ -244,40 +244,35 @@ export class GitOperatingModelRepository implements OperatingModelRepository {
   async resolveActive(target: OperatingModelId): Promise<OperatingModelRevisionRef> { const value = (await this.#state()).state.active[targetKey(target)]; if (!value) throw new Error("OperatingModelNotFound"); return value; }
   async readRevision(target: OperatingModelId, ref: OperatingModelRevisionRef): Promise<OperatingModelSnapshot> { const value = (await this.#state()).state.snapshots[snapshotKey(target, ref)]; if (!value) throw new Error("RevisionNotFound"); return value; }
   async listAvailableModels(): Promise<readonly OperatingModelId[]> { return Object.keys((await this.#state()).state.active).map(parseTarget); }
-  async proposeFromReflection(input: Parameters<OperatingModelRepository["proposeFromReflection"]>[0]): Promise<OperatingModelOperation> { return this.#propose({ ...input, proposer: { kind: "reflection", id: input.proposerId } }); }
-  async propose(input: Parameters<OperatingModelRepository["propose"]>[0]): Promise<OperatingModelOperation> { return this.#propose(input); }
-  async getProposal(proposalId: string): Promise<OperatingModelProposal | undefined> { const state = (await this.#state()).state; return state.proposals[proposalId] && this.#proposalView(state, proposalId); }
-  async listProposals(target?: OperatingModelId): Promise<readonly OperatingModelProposal[]> { const state = (await this.#state()).state; return Object.keys(state.proposals).map((id) => this.#proposalView(state, id)).filter((item) => !target || targetKey(item.target) === targetKey(target)); }
-  async review(input: Parameters<OperatingModelRepository["review"]>[0]): Promise<OperatingModelOperation> {
+  async listRevisions(target: OperatingModelId): Promise<readonly OperatingModelRevisionRef[]> { const state = (await this.#state()).state; return Object.values(state.snapshots).filter((snapshot) => targetKey(snapshot.target) === targetKey(target)).map((snapshot) => snapshot.ref).sort((left, right) => left.revisionId.localeCompare(right.revisionId)); }
+  async putProposal(input: Parameters<OperatingModelStorePort["putProposal"]>[0]): Promise<OperatingModelOperation> {
     const loaded = await this.#state(); const existing = loaded.state.operations[input.operationId]; if (existing) return existing;
-    const proposal = loaded.state.proposals[input.proposalId];
-    if (!proposal || proposal.candidateDigest !== input.proposalDigest) return this.#reject(loaded, input.operationId, "ProposalNotFound", "Proposal is not current");
-    const reviewBasis = { reviewId: `review:${input.operationId}`, proposalId: proposal.proposalId, proposalDigest: proposal.candidateDigest, decision: input.decision, reviewer: input.reviewer, ...(input.comment ? { comment: input.comment } : {}), validationRequirements: input.validationRequirements }; const review: OperatingModelReview = { ...reviewBasis, reviewDigest: digest(JSON.stringify(reviewBasis)) };
-    const state = structuredClone(loaded.state); state.reviews[review.reviewId] = review; return this.#commit(loaded, state, input.operationId, review);
+    const active = loaded.state.active[targetKey(input.proposal.target)];
+    if (!active || !sameRef(active, input.proposal.baseRevision)) return this.#reject(loaded, input.operationId, "BaseRevisionConflict", "Proposal base is not active");
+    const state = structuredClone(loaded.state); state.snapshots[snapshotKey(input.candidate.target, input.candidate.ref)] = input.candidate; state.proposals[input.proposal.proposalId] = input.proposal;
+    return this.#commit(loaded, state, input.operationId, input.proposal);
   }
-  async reject(input: Parameters<OperatingModelRepository["reject"]>[0]): Promise<OperatingModelOperation> { return this.review({ ...input, proposalDigest: (await this.getProposal(input.proposalId))?.candidateDigest ?? "", decision: "rejected", validationRequirements: {} }); }
-  async adopt(input: Parameters<OperatingModelRepository["adopt"]>[0]): Promise<OperatingModelOperation> {
+  async getProposal(proposalId: string): Promise<OperatingModelProposal | undefined> { const state = (await this.#state()).state; const proposal = state.proposals[proposalId]; return proposal && this.#proposalView(state, proposal); }
+  async getCandidate(proposalId: string): Promise<OperatingModelSnapshot | undefined> { const proposal = await this.getProposal(proposalId); return proposal ? this.readRevision(proposal.target, proposal.candidateRevision) : undefined; }
+  async listProposals(target?: OperatingModelId): Promise<readonly OperatingModelProposal[]> { const state = (await this.#state()).state; return Object.values(state.proposals).map((proposal) => this.#proposalView(state, proposal)).filter((item) => !target || targetKey(item.target) === targetKey(target)); }
+  async getReview(proposalId: string): Promise<OperatingModelReview | undefined> { const state = (await this.#state()).state; return Object.values(state.reviews).find((review) => review.proposalId === proposalId); }
+  async putReview(input: Parameters<OperatingModelStorePort["putReview"]>[0]): Promise<OperatingModelOperation> {
+    const loaded = await this.#state(); const existing = loaded.state.operations[input.operationId]; if (existing) return existing; const proposal = loaded.state.proposals[input.review.proposalId];
+    if (!proposal || this.#proposalView(loaded.state, proposal).status !== "open" || Object.values(loaded.state.reviews).some((review) => review.proposalId === proposal.proposalId)) return this.#reject(loaded, input.operationId, "ProposalStateConflict", "Proposal cannot be reviewed");
+    const state = structuredClone(loaded.state); state.reviews[input.review.reviewId] = input.review; return this.#commit(loaded, state, input.operationId, input.review);
+  }
+  async adoptCandidate(input: Parameters<OperatingModelStorePort["adoptCandidate"]>[0]): Promise<OperatingModelOperation> {
     const loaded = await this.#state(); const existing = loaded.state.operations[input.operationId]; if (existing) return existing;
-    const proposal = loaded.state.proposals[input.proposalId]; const review = loaded.state.reviews[input.reviewId];
-    if (!proposal || !review || review.decision !== "approved" || review.proposalDigest !== input.proposalDigest || review.reviewDigest !== input.reviewDigest) return this.#reject(loaded, input.operationId, "ReviewRequired", "A matching approved human review is required");
-    const active = loaded.state.active[targetKey(proposal.target)];
-    if (!active || active.revisionId !== input.expectedActiveRevision.revisionId || active.contentDigest !== input.expectedActiveRevision.contentDigest || proposal.baseRevision.revisionId !== active.revisionId || proposal.baseRevision.contentDigest !== active.contentDigest) return this.#reject(loaded, input.operationId, "BaseRevisionConflict", "The proposal base is no longer active");
-    let candidate: OperatingModelSnapshot;
-    try { candidate = applyOperatingModelPatch(loaded.state.snapshots[snapshotKey(proposal.target, active)]!, proposal.patch); }
-    catch (error) { return this.#reject(loaded, input.operationId, "ValidationFailed", error instanceof Error ? error.message : "Candidate patch failed"); }
-    const nextDigest = digest(stable({ manifest: candidate.manifest, documents: candidate.documents.map((d) => ({ path: d.path, content: d.content })) })); const next: OperatingModelRevisionRef = { revisionId: `adopted:${nextDigest.slice(0, 16)}`, contentDigest: nextDigest };
-    const state = structuredClone(loaded.state); state.snapshots[snapshotKey(proposal.target, next)] = { ...candidate, ref: next, parentRef: active }; state.active[targetKey(proposal.target)] = next;
-    const adoption: OperatingModelAdoption = { adoptionId: `adoption:${input.operationId}`, proposalId: proposal.proposalId, previousActive: active, activeRevision: next, reviewBinding: { reviewId: input.reviewId, proposalDigest: input.proposalDigest }, validationEvidence: { candidateDigest: nextDigest, status: "passed" } };
+    const active = loaded.state.active[targetKey(input.proposal.target)];
+    if (!active || !sameRef(active, input.expectedActiveRevision) || !sameRef(active, input.proposal.baseRevision)) return this.#reject(loaded, input.operationId, "BaseRevisionConflict", "The proposal base is no longer active");
+    const candidate = loaded.state.snapshots[snapshotKey(input.proposal.target, input.proposal.candidateRevision)]; if (!candidate) return this.#reject(loaded, input.operationId, "RevisionNotFound", "Candidate revision is missing");
+    const next: OperatingModelRevisionRef = { revisionId: `adopted:${candidate.ref.contentDigest.slice(0, 16)}`, contentDigest: candidate.ref.contentDigest };
+    const state = structuredClone(loaded.state); state.snapshots[snapshotKey(input.proposal.target, next)] = { ...candidate, ref: next, parentRef: active }; state.active[targetKey(input.proposal.target)] = next;
+    const adoption: OperatingModelAdoption = { adoptionId: `adoption:${input.operationId}`, proposalId: input.proposal.proposalId, previousActive: active, activeRevision: next, reviewBinding: { reviewId: input.review.reviewId, proposalDigest: input.review.proposalDigest, validationReceiptDigest: input.review.validationReceiptDigest } };
     return this.#commit(loaded, state, input.operationId, adoption);
   }
   async inspectOperation(operationId: string): Promise<OperatingModelOperation | undefined> { return (await this.#state()).state.operations[operationId]; }
-  async #propose(input: Omit<OperatingModelProposal, "proposalId" | "candidateDigest" | "status"> & { operationId: string }): Promise<OperatingModelOperation> {
-    const loaded = await this.#state(); const existing = loaded.state.operations[input.operationId]; if (existing) return existing;
-    const active = loaded.state.active[targetKey(input.target)]; if (!active || active.revisionId !== input.baseRevision.revisionId || active.contentDigest !== input.baseRevision.contentDigest) return this.#reject(loaded, input.operationId, "BaseRevisionConflict", "Proposal base is not active");
-    try { applyOperatingModelPatch(loaded.state.snapshots[snapshotKey(input.target, active)]!, input.patch); } catch (error) { return this.#reject(loaded, input.operationId, "ValidationFailed", error instanceof Error ? error.message : "Invalid candidate patch"); }
-    const candidateDigest = digest(input.patch); const proposal: OperatingModelProposal = { ...input, proposalId: `proposal:${input.operationId}`, candidateDigest, status: "open" }; const state = structuredClone(loaded.state); state.proposals[proposal.proposalId] = proposal; return this.#commit(loaded, state, input.operationId, proposal);
-  }
-  #proposalView(state: GitOperatingModelState, id: string): OperatingModelProposal { const proposal = state.proposals[id]!; const reviews = Object.values(state.reviews).filter((review) => review.proposalId === id); const adopted = Object.values(state.operations).some((operation) => operation.status === "committed" && "proposalId" in operation.result && operation.result.proposalId === id && "adoptionId" in operation.result); return { ...proposal, status: adopted ? "adopted" : reviews.some((review) => review.decision === "rejected") ? "rejected" : reviews.some((review) => review.decision === "approved") ? "approved" : "open" }; }
+  #proposalView(state: GitOperatingModelState, proposal: OperatingModelProposal): OperatingModelProposal { const review = Object.values(state.reviews).find((item) => item.proposalId === proposal.proposalId); const adopted = Object.values(state.operations).some((operation) => operation.status === "committed" && "adoptionId" in operation.result && operation.result.proposalId === proposal.proposalId); const active = state.active[targetKey(proposal.target)]; return { ...proposal, status: adopted ? "adopted" : !active || !sameRef(active, proposal.baseRevision) ? "stale" : review?.decision === "rejected" ? "rejected" : review?.decision === "approved" ? "approved" : "open" }; }
   async #commit(loaded: LoadedGitState, state: GitOperatingModelState, operationId: string, result: OperatingModelProposal | OperatingModelReview | OperatingModelAdoption): Promise<OperatingModelOperation> { const operation: OperatingModelOperation = { operationId, status: "committed", result }; state.operations[operationId] = operation; await this.#write(state, loaded.oid, operationId); return operation; }
   async #reject(loaded: LoadedGitState, operationId: string, code: string, message: string): Promise<OperatingModelOperation> { const operation: OperatingModelOperation = { operationId, status: "rejected", error: { code, message } }; const state = structuredClone(loaded.state); state.operations[operationId] = operation; await this.#write(state, loaded.oid, operationId); return operation; }
   async #state(): Promise<LoadedGitState> { await this.#ensureGit(); const run = promisify(execFile); let oid: string; try { oid = (await run("git", ["rev-parse", "--verify", this.#ref], { cwd: this.#root })).stdout.trim(); } catch { return { state: { snapshots: {}, active: {}, proposals: {}, reviews: {}, operations: {} } }; } const { stdout } = await run("git", ["show", `${oid}:state.json`], { cwd: this.#root }); return { oid, state: JSON.parse(stdout) as GitOperatingModelState }; }
@@ -287,47 +282,6 @@ export class GitOperatingModelRepository implements OperatingModelRepository {
 
 interface GitOperatingModelState { snapshots: Record<string, OperatingModelSnapshot>; active: Record<string, OperatingModelRevisionRef>; proposals: Record<string, OperatingModelProposal>; reviews: Record<string, OperatingModelReview>; operations: Record<string, OperatingModelOperation> }
 interface LoadedGitState { oid?: string; state: GitOperatingModelState }
-function targetKey(target: OperatingModelId): string { return `${target.moduleId}/${target.workTypeId}`; }
-function parseTarget(value: string): OperatingModelId { const [moduleId, workTypeId] = value.split("/"); return { moduleId: moduleId!, workTypeId: workTypeId! }; }
-function snapshotKey(target: OperatingModelId, ref: OperatingModelRevisionRef): string { return `${targetKey(target)}@${ref.revisionId}:${ref.contentDigest}`; }
-function applyOperatingModelPatch(base: OperatingModelSnapshot, patch: string): OperatingModelSnapshot {
-  let changes: Record<string, string>;
-  try { const parsed = JSON.parse(patch) as { documents?: Record<string, string> }; if (!parsed.documents || typeof parsed.documents !== "object") throw new Error(); changes = parsed.documents; }
-  catch { changes = applyUnifiedPatch(base.documents, patch); }
-  const documents = base.documents.map((document) => changes[document.path] === undefined ? document : { ...document, content: changes[document.path]!, digest: digest(changes[document.path]!) });
-  for (const path of Object.keys(changes)) if (!documents.some((document) => document.path === path) || path.includes("..") || path.startsWith("/")) throw new Error("ValidationFailed: candidate changes an unknown or unsafe path");
-  return { ...base, documents };
-}
-function applyUnifiedPatch(documents: readonly { path: string; content: string }[], patch: string): Record<string, string> {
-  const lines = patch.replace(/\r\n/gu, "\n").split("\n"); const changes: Record<string, string> = {}; let index = 0;
-  while (index < lines.length) {
-    if (!lines[index]!.startsWith("--- ")) { index += 1; continue; }
-    const before = lines[index++]!.slice(4).replace(/^a\//u, ""); const afterLine = lines[index++];
-    if (!afterLine?.startsWith("+++ ")) throw new Error("ValidationFailed: malformed unified patch header");
-    const path = afterLine.slice(4).replace(/^b\//u, "");
-    if (before !== path || path.startsWith("/") || path.split("/").includes("..")) throw new Error("ValidationFailed: unsafe unified patch path");
-    const document = documents.find((candidate) => candidate.path === path); if (!document) throw new Error("ValidationFailed: candidate changes an unknown path");
-    const original = document.content.split("\n"); const output: string[] = []; let cursor = 0; let sawHunk = false;
-    while (index < lines.length && !lines[index]!.startsWith("--- ")) {
-      const header = lines[index]!; const hunk = /^@@ -(\d+)(?:,\d+)? \+\d+(?:,\d+)? @@/u.exec(header);
-      if (!hunk) { index += 1; continue; }
-      sawHunk = true; index += 1; const start = Number(hunk[1]) - 1;
-      if (start < cursor || start > original.length) throw new Error("ValidationFailed: invalid unified patch range");
-      output.push(...original.slice(cursor, start)); cursor = start;
-      while (index < lines.length && !lines[index]!.startsWith("@@ ") && !lines[index]!.startsWith("--- ")) {
-        const line = lines[index++]!; if (line.startsWith("\\")) continue;
-        const marker = line[0]; const value = line.slice(1);
-        if (marker === " ") { if (original[cursor] !== value) throw new Error("ValidationFailed: unified patch context does not match"); output.push(value); cursor += 1; }
-        else if (marker === "-") { if (original[cursor] !== value) throw new Error("ValidationFailed: unified patch deletion does not match"); cursor += 1; }
-        else if (marker === "+") output.push(value);
-        else throw new Error("ValidationFailed: malformed unified patch hunk");
-      }
-    }
-    if (!sawHunk) throw new Error("ValidationFailed: unified patch contains no hunk");
-    output.push(...original.slice(cursor)); changes[path] = output.join("\n");
-  }
-  if (!Object.keys(changes).length) throw new Error("ValidationFailed: candidate patch contains no file change"); return changes;
-}
 function gitInput(cwd: string, args: readonly string[], input: string, env: NodeJS.ProcessEnv): Promise<string> { return new Promise((resolveInput, rejectInput) => { const child = spawn("git", [...args], { cwd, env, stdio: ["pipe", "pipe", "pipe"] }); let stdout = ""; let stderr = ""; child.stdout.on("data", (chunk) => { stdout += String(chunk); }); child.stderr.on("data", (chunk) => { stderr += String(chunk); }); child.on("error", rejectInput); child.on("close", (code) => code === 0 ? resolveInput(stdout) : rejectInput(new Error(stderr || `git exited ${code}`))); child.stdin.end(input); }); }
 
 async function walkFiles(root: string, rejectLinks = false): Promise<string[]> {

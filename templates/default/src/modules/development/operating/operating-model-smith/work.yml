@@ -1,0 +1,14 @@
+schemaVersion: 1
+id: operating-model-smith
+title: Improve an Operating Model
+description: Maintain an installation-owned Operating Model as a reviewable candidate package.
+capabilities:
+  allowed: []
+documents:
+  - id: method
+    path: method.md
+    title: Candidate method
+    role: procedure
+    load: required
+completion:
+  requiredCapabilities: []

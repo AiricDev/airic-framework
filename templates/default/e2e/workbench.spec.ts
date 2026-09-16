@@ -20,15 +20,14 @@ test("creates and completes a governed transaction in simulated mode", async ({ 
   await page.getByLabel("Message").fill("Review the failure and propose a focused improvement");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.locator(".conversation").getByText(/produced an operating-model candidate/i)).toBeVisible();
-  const reflection = page.getByText("Reflection (1)").locator("..");
-  await page.getByText("Reflection (1)").click();
-  await expect(reflection.getByText(/case-assistance\/process\.md/)).toBeVisible();
+  await page.getByText("Reflection proposals (1)", { exact: true }).click();
+  await expect(page.locator("details").filter({ has: page.getByText("Reflection proposals (1)", { exact: true }) }).locator("pre")).toContainText("candidateDigest");
   await page.getByText("Operating model", { exact: true }).click();
-  await expect(page.getByText(/Working tree/)).toBeVisible();
-  await expect(page.getByText(/Publish immutable revision|Rebind versions/)).toHaveCount(0);
+  await expect(page.getByText(/Working tree/).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: /Publish immutable revision|Rebind versions/ })).toHaveCount(0);
 
   await page.reload();
   await expect(page.getByRole("heading", { name: /Reflect on/i })).toBeVisible();
-  await page.getByText("Reflection (1)").click();
-  await expect(page.getByText("Reflection (1)").locator("..").getByText(/case-assistance\/process\.md/)).toBeVisible();
+  await page.getByText("Reflection proposals (1)", { exact: true }).click();
+  await expect(page.locator("details").filter({ has: page.getByText("Reflection proposals (1)", { exact: true }) }).locator("pre")).toContainText("candidateDigest");
 });

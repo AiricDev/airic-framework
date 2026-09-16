@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { DirectoryModuleSource, FileRuntimeStore, GitOperatingModelRepository } from "@airic/storage-files";
-import { loadWorkDefinition } from "@airic/framework";
+import { digest, loadWorkDefinition, OperatingModelService, stable } from "@airic/framework";
 import type { RuntimeEvent } from "@airic/framework";
 
 const event: RuntimeEvent = { kind: "trace.appended", event: { schemaVersion: 1, eventId: "e1", workId: "w1", type: "work.test", timestamp: "2026-01-01T00:00:00Z", actor: "test", payload: {} } };
@@ -66,21 +66,23 @@ describe("FileRuntimeStore", () => {
 
   it("keeps immutable Operating Model proposals and active revisions in private Git state", async () => {
     const directory = await mkdtemp(join(tmpdir(), "airic-operating-model-"));
-    const repository = new GitOperatingModelRepository(directory);
+    const repository = new OperatingModelService(new GitOperatingModelRepository(directory));
     const target = { moduleId: "example", workTypeId: "assist" };
-    const baseline = { target, ref: { revisionId: "baseline:one", contentDigest: "one" }, manifest: { schemaVersion: 1, id: "assist", title: "Assist", capabilities: { allowed: [] }, documents: [{ id: "process", path: "process.md", title: "Process", role: "process", load: "required", requires: [] }], completion: { requiredCapabilities: [] } }, documents: [{ path: "process.md", content: "Original", digest: "original" }] } as const;
+    const workYml = "schemaVersion: 1\nid: assist\ntitle: Assist\ncapabilities:\n  allowed: []\ndocuments:\n  - id: process\n    path: process.md\n    title: Process\n    role: process\n    load: required\ncompletion:\n  requiredCapabilities: []\n";
+    const files = [{ path: "work.yml", content: workYml, digest: digest(workYml) }, { path: "process.md", content: "Original", digest: digest("Original") }].sort((left, right) => left.path.localeCompare(right.path)); const contentDigest = digest(stable(files.map(({ path, content }) => ({ path, content }))));
+    const baseline = { target, ref: { revisionId: "baseline:one", contentDigest }, files } as const;
     await repository.bootstrap(baseline);
-    const proposalResult = await repository.propose({ operationId: "proposal-1", target, baseRevision: baseline.ref, patch: JSON.stringify({ documents: { "process.md": "Revised" } }), rationale: "Clearer", evidenceRefs: [], validationPlan: { checks: ["schema"] }, proposer: { kind: "human", id: "u1" } });
+    const proposalResult = await repository.propose({ operationId: "proposal-1", target, baseRevision: baseline.ref, changeSet: { upsert: [{ path: "process.md", content: "Revised" }], delete: [] }, rationale: "Clearer", evidenceRefs: [], provenance: { trajectoryRevisions: [] }, proposer: { kind: "human", id: "u1" } });
     expect(proposalResult.status).toBe("committed");
     if (proposalResult.status !== "committed" || !("proposalId" in proposalResult.result)) throw new Error("proposal missing");
     const proposal = proposalResult.result;
-    const reviewResult = await repository.review({ operationId: "review-1", proposalId: proposal.proposalId, proposalDigest: proposal.candidateDigest, decision: "approved", reviewer: "u2", validationRequirements: { checks: ["schema"] } });
+    const reviewResult = await repository.review({ operationId: "review-1", proposalId: proposal.proposalId, proposalDigest: proposal.candidateDigest, validationReceiptDigest: proposal.validation.receiptDigest, decision: "approved", reviewer: "u2" });
     expect(reviewResult.status).toBe("committed");
     if (reviewResult.status !== "committed" || !("reviewId" in reviewResult.result)) throw new Error("review missing");
     const review = reviewResult.result;
     const adopted = await repository.adopt({ operationId: "adopt-1", proposalId: proposal.proposalId, proposalDigest: proposal.candidateDigest, reviewId: review.reviewId, reviewDigest: review.reviewDigest, expectedActiveRevision: baseline.ref, reviewer: "u2" });
     expect(adopted.status).toBe("committed");
-    expect((await repository.readRevision(target, await repository.resolveActive(target))).documents[0]?.content).toBe("Revised");
+    expect((await repository.readRevision(target, await repository.resolveActive(target))).files.find((file) => file.path === "process.md")?.content).toBe("Revised");
   });
 
   it("rebuilds a disposable snapshot anchored to the journal", async () => {
@@ -94,6 +96,6 @@ describe("FileRuntimeStore", () => {
 });
 
 async function snapshotFromWorkingTree(source: DirectoryModuleSource, ref: { moduleId: string; workTypeId: string; packagePath: string }) {
-  const exported = await source.exportFiles(ref); const contentDigest = exported.digest;
-  return { target: { moduleId: ref.moduleId, workTypeId: ref.workTypeId }, ref: { revisionId: `working:${contentDigest.slice(0, 12)}`, contentDigest }, manifest: exported.files["work.yml"]!, documents: Object.entries(exported.files).map(([path, content]) => ({ path, content, digest: content })) };
+  const exported = await source.exportFiles(ref); const files = Object.entries(exported.files).map(([path, content]) => ({ path, content, digest: digest(content) })); const contentDigest = digest(stable(files.map(({ path, content }) => ({ path, content }))));
+  return { target: { moduleId: ref.moduleId, workTypeId: ref.workTypeId }, ref: { revisionId: `working:${contentDigest.slice(0, 12)}`, contentDigest }, files };
 }

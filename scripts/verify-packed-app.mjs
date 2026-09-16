@@ -37,6 +37,7 @@ if (scaffoldIdentityWasPersisted) throw new Error("Generated app persisted the s
 if ((await run("git", ["status", "--porcelain"], { cwd: app })).stdout.trim()) throw new Error("Generated app working tree is not clean after creation");
 for (const path of [".env", "models.json", "models-store.json", ".airic/runtime"]) await run("git", ["check-ignore", "-q", path], { cwd: app });
 await access(resolve(app, "src/modules/development/operating/module-smith/work.yml"));
+await access(resolve(app, "src/modules/development/operating/operating-model-smith/work.yml"));
 await access(resolve(app, "src/modules/development/operating/reflection/work.yml"));
 await access(resolve(app, "src/modules/cases/operating/case-assistance/work.yml"));
 await access(resolve(app, "e2e/cases.spec.ts"));
@@ -65,7 +66,9 @@ await run("pnpm", ["run", "build"], { cwd: app });
 await run("pnpm", ["test"], { cwd: app });
 
 const port = 43871;
-const child = spawn("pnpm", ["run", "dev"], { cwd: app, env: { ...process.env, PORT: String(port) }, stdio: ["ignore", "pipe", "pipe"] });
+// Start the generated entrypoint directly so the verifier owns the server process
+// and can reliably wait for its shutdown (rather than relying on pnpm signal relay).
+const child = spawn(process.execPath, ["--env-file-if-exists=.env", "--enable-source-maps", "dist/main.js"], { cwd: app, env: { ...process.env, PORT: String(port) }, stdio: ["ignore", "pipe", "pipe"] });
 let output = "";
 child.stdout.on("data", (chunk) => { output += chunk; });
 child.stderr.on("data", (chunk) => { output += chunk; });
@@ -84,6 +87,10 @@ try {
   if (!healthy) throw new Error(`Generated app did not become healthy:\n${output}`);
   console.log(`Packed application built, tested and started from ${scratch}`);
 } finally {
-  child.kill("SIGTERM");
-  await new Promise((resolveExit) => child.once("exit", resolveExit));
+  if (child.exitCode === null) {
+    const exited = new Promise((resolveExit) => child.once("exit", resolveExit));
+    child.kill("SIGTERM");
+    await Promise.race([exited, new Promise((resolveWait) => setTimeout(resolveWait, 5_000))]);
+    if (child.exitCode === null) child.kill("SIGKILL");
+  }
 }

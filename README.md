@@ -2,7 +2,7 @@
 
 Airic connects document-defined operating models to deterministic domain capabilities. The Agent decides how to pursue a Work; application domain code decides which state changes are legal.
 
-The framework deliberately owns only `Work` and cross-domain `Action` runtime entities. Applications compose Modules; each Module may own Domain providers, WorkTypes and server/browser contributions. Sessions, turns, approvals, internal steps, and compaction belong to the harness and appear only as attributable trace when they matter. A WorkType package may live beside its vertical slice under `src/modules/<module>/operating/`, but Runtime receives an immutable revision only through `OperatingModelRuntimePort`. One repository can separately expose learning proposal and human governance ports; the reference adapter uses private Git refs and never changes the developer checkout.
+The framework deliberately owns only `Work` and cross-domain `Action` runtime entities. Applications compose Modules; each Module may own Domain providers, WorkTypes and server/browser contributions. Sessions, turns, approvals, internal steps, and compaction belong to the harness and appear only as attributable trace when they matter. An Operating Model is an installation-owned, immutable Work Definition package. Runtime reads its active revision through `OperatingModelRuntimePort`; Reflection and Operating Model Smith can submit structure-validated candidates; a trusted human host reviews and adopts them. The reference adapter uses a private Git repository in runtime data and never changes the developer checkout.
 
 ## Run the canonical demo
 
@@ -14,7 +14,7 @@ pnpm --filter @airic/template-default dev
 
 Open `http://127.0.0.1:4173`. The default is a clearly labelled simulated harness. See [the demo guide](./docs/demo.md) for the rejection/recovery path and real Pi configuration.
 
-Git is required by `create-airic`. A generated project is initialized on `main` with one scaffold commit and includes a `development/module-smith` onboarding WorkType. The generated application hosts one Node HTTP server: module business routes under `/api/app/**`, the Airic handler under `/api/airic/**`, then production static assets. Configure the Pi harness to let Module Smith modify only its explicitly selected target module.
+Git is required by `create-airic`. A generated project is initialized on `main` with one scaffold commit and includes development WorkTypes for Module Smith, Reflection and Operating Model Smith. The generated application hosts one Node HTTP server: module business routes under `/api/app/**`, the Airic handler under `/api/airic/**`, then production static assets. Configure the Pi harness to let Module Smith modify only its explicitly selected target module.
 
 ## Packages
 

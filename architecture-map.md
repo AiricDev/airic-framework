@@ -22,12 +22,12 @@
 |---|---|---|
 | Work creator, authority and per-turn serialization | `packages/framework/src/application/runtime.ts` | `packages/framework/test/runtime.test.ts` |
 | HTTP/SSE filtering and access checks | `packages/server/src/index.ts` | `packages/server/test/server.test.ts` |
-| Sensitive trace read audit hook, reflection proposal linkage and Operating Model repository APIs | `packages/server/src/index.ts`, `packages/framework/src/application/runtime.ts`, `packages/framework/src/application/operating-model.ts` | server and runtime tests |
+| Sensitive trace read audit hook, Reflection source bindings, Operating Model candidate provenance and repository APIs | `packages/server/src/index.ts`, `packages/framework/src/application/runtime.ts`, `packages/framework/src/application/operating-model.ts` | server, runtime and operating-model tests |
 | Host-extracted Work evidence, bounded binary upload and on-demand Agent reading | `packages/framework/src/application/runtime.ts`, `packages/server/src/index.ts`, `packages/client/src/index.ts` | runtime, server and client tests |
 | ACP bind, prompt, cancel, replay | `packages/acp/src/index.ts` | `packages/acp/test/gateway.test.ts` |
 | Module dependency and public contract resolution | `packages/framework/src/application` | module registry tests |
 | Remote business-system integration | `packages/framework/src/integration/http-domain.ts` | `packages/framework/test/http-domain.test.ts` |
-| Immutable Operating Model repository, proposal/adoption CAS and private Git refs | `packages/framework/src/application/operating-model.ts`, `packages/storage-files/src/index.ts` | runtime and storage repository tests |
+| Immutable Operating Model package materialization, structural validation, proposal/adoption CAS and private Git refs | `packages/framework/src/application/operating-model.ts`, `packages/storage-files/src/index.ts` | runtime, operating-model and storage repository tests |
 | Workspace scope and secret protection | `packages/harness-pi/src/workspace.ts` | workspace tests |
 | Generated standalone app | `templates/default`, `packages/create-airic` | `scripts/verify-packed-app.mjs` |
 
@@ -42,7 +42,7 @@
 - `createHttpDomainProvider` adapts the `airic-domain/v1` protocol to the existing inward `DomainProvider` port. Its host-owned `requestHeaders` signs serialized transport requests only; it carries Work/Action correlation and expected releases, but never makes tool-input identity authoritative. Network loss, timeout and unparseable replies are `unknown` and require inspection/reconciliation.
 - `TurnContextRef` is traceable UI navigation context. It reaches the ContextEnvelope as a non-authoritative hint; it cannot change the Work target, identity or authorization.
 - Business systems own Business State, deterministic Cognitive Interfaces and typed Capability APIs. Airic owns Work/Action/trace and never turns a projection into authoritative business data; see `docs/agent-business-state-boundary.md`.
-- Operating Model assets are an immutable repository boundary. Runtime receives only `OperatingModelRuntimePort`; Reflection receives only `OperatingModelLearningPort`; trusted human UI receives `OperatingModelGovernancePort`. The Git-backed reference adapter stores private refs without changing the checked-out project. Runtime pins a revision within a turn and records a change only when the following turn sees a new active revision.
+- Operating Model assets are installation-owned immutable packages. Runtime receives only `OperatingModelRuntimePort`; host-allowlisted Reflection and Operating Model Smith Works receive authoring tools; trusted governance receives `OperatingModelGovernancePort`. Work Definition content cannot grant those tools. The Git adapter stores private refs in a dedicated runtime-data repository, and Runtime pins a revision within a turn so an adoption appears only on the next turn.
 - The Application host owns document extraction via `RuntimeOptions.extractEvidence`; Airic stores the original and text projection as Work-bound evidence and limits Agent reads to a locator on the same Work. This is not a business attachment or approval.
 - Module Smith writes only its host-scoped target module. The host owns fixed checks; the Agent cannot use a general shell or Git write tools.
 - `scripts/architecture-check.mjs` and package tests enforce these boundaries.

@@ -41,6 +41,18 @@ describe("AiricClient", () => {
     expect(JSON.parse(String(messagesInit?.body))).toEqual({ message: "hello" });
   });
 
+  it("exposes source attachment and Operating Model revision reads", async () => {
+    const request = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "reflection-1", sourceWorks: [{ workId: "trajectory-1" }] }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ revisionId: "r2", contentDigest: "d2" }]), { status: 200 }));
+    const client = createAiricClient({ fetch: request });
+    expect(await client.attachSourceWork("reflection-1", "trajectory-1")).toMatchObject({ sourceWorks: [{ workId: "trajectory-1" }] });
+    expect(await client.listOperatingModelRevisions("development", "reflection")).toEqual([{ revisionId: "r2", contentDigest: "d2" }]);
+    expect(request.mock.calls[0]).toEqual(["/api/airic/works/reflection-1/sources", expect.objectContaining({ method: "POST" })]);
+    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toEqual({ workId: "trajectory-1" });
+    expect(request.mock.calls[1]?.[0]).toBe("/api/airic/operating-models/development/reflection/revisions");
+  });
+
   it("subscribes to trace events and closes without leaking the source", () => {
     let listener: ((event: EventSourceMessage) => void) | undefined; const close = vi.fn();
     const client = createAiricClient({ eventSource: () => ({ addEventListener: (type, value) => { if (type === "trace") listener = value; }, close }) });
