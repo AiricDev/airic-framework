@@ -2,7 +2,7 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, resolve, sep } from "node:path";
-import { type AiricRuntime, type CreateWorkInput, type OperatingModelGovernancePort, type OperatingModelId, type OperatingModelRuntimePort, type TraceEvent, type TrustedCallContext, type Work, type WorkTypeRef } from "@airic/framework";
+import { type AiricRuntime, type CreateWorkInput, type LiveWorkEvent, type OperatingModelGovernancePort, type OperatingModelId, type OperatingModelRuntimePort, type TraceEvent, type TrustedCallContext, type Work, type WorkTypeRef } from "@airic/framework";
 
 export type AiricAccessResource =
   | { kind: "work"; work: Work; action: "read" | "prompt" | "complete" | "interrupt" | "reflect" | "upload" }
@@ -30,6 +30,8 @@ export interface AiricHttpHandlerOptions {
   agentConnection?: (work: Work, request: IncomingMessage) => Promise<{ url: string; cwd: string; sessionId?: string }>;
   onTraceRead?: (actor: TrustedCallContext["actor"], work: Work, channel: "http" | "sse") => Promise<void>;
   maxWorkUploadBytes?: number;
+  /** Revalidate an SSE connection at this interval while authorizing every event. */
+  sseAuthenticationTtlMs?: number;
 }
 
 export interface AiricServerOptions extends Omit<AiricHttpHandlerOptions, "basePath"> {
@@ -62,6 +64,25 @@ export function createStaticHandler(options: StaticHandlerOptions): StaticHttpHa
 export function createAiricHttpHandler(options: AiricHttpHandlerOptions): AiricHttpHandler {
   const basePath = normalizeBasePath(options.basePath ?? "/api/airic");
   const clients = new Set<{ request: IncomingMessage; response: ServerResponse; pending: Promise<void>; visibleWorkIds: Set<string> }>();
+  const workClients = new Set<{ workId: string; request: IncomingMessage; response: ServerResponse; pending: Promise<void>; actor: TrustedCallContext["actor"]; authenticateAfter: number }>();
+  const sseAuthenticationTtlMs = options.sseAuthenticationTtlMs ?? 10_000;
+  const refreshSseActor = async (client: { request: IncomingMessage; actor: TrustedCallContext["actor"]; authenticateAfter: number }): Promise<TrustedCallContext["actor"]> => {
+    if (Date.now() >= client.authenticateAfter) {
+      client.actor = await authenticate(options, client.request);
+      client.authenticateAfter = Date.now() + sseAuthenticationTtlMs;
+    }
+    return client.actor;
+  };
+  const writeWorkEvent = (client: { workId: string; request: IncomingMessage; response: ServerResponse; pending: Promise<void>; actor: TrustedCallContext["actor"]; authenticateAfter: number }, frame: string): void => {
+    client.pending = client.pending.then(async () => {
+      try {
+        const actor = await refreshSseActor(client);
+        const work = options.runtime.getWork(client.workId);
+        if (!work || !await allowed(options, actor, { kind: "work", work, action: "read" })) { client.response.end(); workClients.delete(client); return; }
+        client.response.write(frame);
+      } catch { client.response.end(); workClients.delete(client); }
+    });
+  };
   const unsubscribe = options.runtime.subscribe((event) => {
     for (const client of clients) {
       client.pending = client.pending.then(async () => {
@@ -76,6 +97,10 @@ export function createAiricHttpHandler(options: AiricHttpHandlerOptions): AiricH
         } catch { client.response.end(); clients.delete(client); }
       });
     }
+    for (const client of workClients) if (client.workId === event.workId) writeWorkEvent(client, encodeSse(event));
+  });
+  const unsubscribeLive = options.runtime.subscribeLive((event) => {
+    for (const client of workClients) if (client.workId === event.workId) writeWorkEvent(client, encodeLive(event));
   });
   let closed = false;
   return {
@@ -117,13 +142,15 @@ export function createAiricHttpHandler(options: AiricHttpHandlerOptions): AiricH
         const workTypeMatch = path.match(/^\/work-types\/([^/]+)\/([^/]+)$/u);
         if (workTypeMatch && request.method === "GET") { const ref = { moduleId: decodeURIComponent(workTypeMatch[1]!), workTypeId: decodeURIComponent(workTypeMatch[2]!) }; await requireAccess(options, actor, { kind: "work-type", ref }); return options.getWorkType ? json(response, 200, await options.getWorkType(ref.moduleId, ref.workTypeId)) : json(response, 501, { error: "WorkType reading is not configured", code: "NotConfigured" }); }
         if (path === "/uploads" && request.method === "POST") { await requireAccess(options, actor, { kind: "upload" }); return options.saveUpload ? json(response, 201, await options.saveUpload(await bodyJson(request) as never)) : json(response, 501, { error: "Uploads are not configured", code: "NotConfigured" }); }
-        const match = path.match(/^\/works\/([^/]+)(?:\/(trace|messages|complete|interrupt|reflection|sources|uploads|agent-connection))?$/u);
+        const match = path.match(/^\/works\/([^/]+)(?:\/(trace|messages|complete|interrupt|reflection|sources|uploads|agent-connection|events|activity))?$/u);
         if (match) {
           const workId = decodeURIComponent(match[1]!); const operation = match[2];
           const work = options.runtime.getWork(workId);
           if (!work) throw new AiricHttpError(404, "WorkNotFound", "Work not found");
           const action = operation === "messages" ? "prompt" : operation === "interrupt" ? "interrupt" : operation === "complete" ? "complete" : operation === "uploads" ? "upload" : operation === "sources" || operation?.startsWith("reflection") ? "reflect" : "read";
           await requireAccess(options, actor, { kind: "work", work, action });
+          if (operation === "activity" && request.method === "GET") return json(response, 200, options.runtime.getWorkActivity?.(workId) ?? { active: false });
+          if (operation === "events" && request.method === "GET") { await options.onTraceRead?.(actor, work, "sse"); response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" }); const events = options.runtime.getTrace(workId); const lastId = lastEventId(request, url); const start = typeof lastId === "string" ? Math.max(0, events.findIndex((event) => event.eventId === lastId) + 1) : events.length; for (const event of events.slice(start)) response.write(encodeSse(event)); response.write(encodeActivity(options.runtime.getWorkActivity?.(workId) ?? { active: false })); response.write(": connected\n\n"); const client = { workId, request, response, pending: Promise.resolve(), actor, authenticateAfter: Date.now() + sseAuthenticationTtlMs }; workClients.add(client); request.on("close", () => workClients.delete(client)); return true; }
           if (!operation && request.method === "GET") { await options.onTraceRead?.(actor, work, "http"); return json(response, 200, { work, trace: options.runtime.getTrace(workId) }); }
           if (operation === "trace" && request.method === "GET") { await options.onTraceRead?.(actor, work, "http"); return json(response, 200, options.runtime.getTrace(workId)); }
           if (operation === "agent-connection" && request.method === "GET") return options.agentConnection ? json(response, 200, await options.agentConnection(work, request)) : json(response, 501, { error: "ACP is not configured", code: "NotConfigured" });
@@ -147,7 +174,7 @@ export function createAiricHttpHandler(options: AiricHttpHandlerOptions): AiricH
         return json(response, 404, { error: "Airic route not found", code: "RouteNotFound" });
       } catch (error) { return json(response, error instanceof AiricHttpError ? error.status : error instanceof SyntaxError ? 400 : error instanceof Error && error.message.startsWith("WorkBusy:") ? 409 : 400, { error: error instanceof Error ? error.message : String(error), code: error instanceof AiricHttpError ? error.code : error instanceof SyntaxError ? "InvalidJson" : error instanceof Error && error.message.startsWith("WorkBusy:") ? "WorkBusy" : "RequestFailed" }); }
     },
-    async close() { if (closed) return; closed = true; unsubscribe(); for (const client of clients) client.response.end(); clients.clear(); },
+    async close() { if (closed) return; closed = true; unsubscribe(); unsubscribeLive(); for (const client of clients) client.response.end(); clients.clear(); for (const client of workClients) client.response.end(); workClients.clear(); },
   };
 }
 
@@ -184,6 +211,8 @@ async function readBounded(request: IncomingMessage, limit: number): Promise<Buf
 async function bodyJson(request: IncomingMessage): Promise<unknown> { const bytes = await readBounded(request, 1024 * 1024); return bytes.length ? JSON.parse(bytes.toString("utf8")) : {}; }
 function json(response: ServerResponse, status: number, value: unknown): true { response.writeHead(status, { "content-type": "application/json; charset=utf-8" }); response.end(JSON.stringify(value)); return true; }
 function encodeSse(event: TraceEvent): string { return `id: ${event.eventId}\nevent: trace\ndata: ${JSON.stringify(event)}\n\n`; }
+function encodeLive(event: LiveWorkEvent): string { return `event: live\ndata: ${JSON.stringify(event)}\n\n`; }
+function encodeActivity(activity: { active: boolean; startedAt?: string }): string { return `event: activity\ndata: ${JSON.stringify(activity)}\n\n`; }
 async function servePath(base: string, pathname: string, response: ServerResponse, spaFallback: (pathname: string) => boolean): Promise<boolean> {
   const requested = pathname === "/" ? "index.html" : pathname.slice(1);
   const path = resolve(base, requested);

@@ -7,7 +7,7 @@ export interface TraceEvent {
   eventId: string;
   workId: string;
   actionId?: string;
-  type: `${"work" | "action" | "context" | "message" | "tool" | "harness" | "reflection"}.${string}`;
+  type: `${ "work" | "action" | "context" | "message" | "tool" | "harness" | "reflection" | "turn"}.${string}`;
   timestamp: string;
   actor: string;
   parentEventId?: string;
@@ -52,6 +52,12 @@ export interface LiveWorkEvent {
   workId: string;
   type: "text-delta";
   text: string;
+}
+
+/** In-flight turn state for one Work; canonical history is always read from TraceEvent. */
+export interface WorkActivity {
+  active: boolean;
+  startedAt?: string;
 }
 
 export interface DeliveryRecord {

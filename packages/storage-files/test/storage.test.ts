@@ -1,6 +1,8 @@
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { DirectoryModuleSource, FileRuntimeStore, GitOperatingModelRepository } from "@airic/storage-files";
 import { digest, loadWorkDefinition, OperatingModelService, stable } from "@airic/framework";
@@ -66,12 +68,16 @@ describe("FileRuntimeStore", () => {
 
   it("keeps immutable Operating Model proposals and active revisions in private Git state", async () => {
     const directory = await mkdtemp(join(tmpdir(), "airic-operating-model-"));
-    const repository = new OperatingModelService(new GitOperatingModelRepository(directory));
+    const checkout = join(directory, "checkout"); await mkdir(checkout); const run = promisify(execFile); await run("git", ["init"], { cwd: checkout });
+    const privateRepository = join(checkout, ".airic", "operating-model.git");
+    const repository = new OperatingModelService(new GitOperatingModelRepository(privateRepository));
     const target = { moduleId: "example", workTypeId: "assist" };
     const workYml = "schemaVersion: 1\nid: assist\ntitle: Assist\ncapabilities:\n  allowed: []\ndocuments:\n  - id: process\n    path: process.md\n    title: Process\n    role: process\n    load: required\ncompletion:\n  requiredCapabilities: []\n";
     const files = [{ path: "work.yml", content: workYml, digest: digest(workYml) }, { path: "process.md", content: "Original", digest: digest("Original") }].sort((left, right) => left.path.localeCompare(right.path)); const contentDigest = digest(stable(files.map(({ path, content }) => ({ path, content }))));
     const baseline = { target, ref: { revisionId: "baseline:one", contentDigest }, files } as const;
     await repository.bootstrap(baseline);
+    expect((await run("git", ["rev-parse", "--is-bare-repository"], { cwd: privateRepository })).stdout.trim()).toBe("true");
+    await expect(run("git", ["show-ref", "--verify", "refs/airic/operating-model/state"], { cwd: checkout })).rejects.toThrow();
     const proposalResult = await repository.propose({ operationId: "proposal-1", target, baseRevision: baseline.ref, changeSet: { upsert: [{ path: "process.md", content: "Revised" }], delete: [] }, rationale: "Clearer", evidenceRefs: [], provenance: { trajectoryRevisions: [] }, proposer: { kind: "human", id: "u1" } });
     expect(proposalResult.status).toBe("committed");
     if (proposalResult.status !== "committed" || !("proposalId" in proposalResult.result)) throw new Error("proposal missing");

@@ -277,7 +277,22 @@ export class GitOperatingModelRepository implements OperatingModelStorePort {
   async #reject(loaded: LoadedGitState, operationId: string, code: string, message: string): Promise<OperatingModelOperation> { const operation: OperatingModelOperation = { operationId, status: "rejected", error: { code, message } }; const state = structuredClone(loaded.state); state.operations[operationId] = operation; await this.#write(state, loaded.oid, operationId); return operation; }
   async #state(): Promise<LoadedGitState> { await this.#ensureGit(); const run = promisify(execFile); let oid: string; try { oid = (await run("git", ["rev-parse", "--verify", this.#ref], { cwd: this.#root })).stdout.trim(); } catch { return { state: { snapshots: {}, active: {}, proposals: {}, reviews: {}, operations: {} } }; } const { stdout } = await run("git", ["show", `${oid}:state.json`], { cwd: this.#root }); return { oid, state: JSON.parse(stdout) as GitOperatingModelState }; }
   async #write(state: GitOperatingModelState, expectedOid: string | undefined, message: string): Promise<void> { await this.#ensureGit(); const run = promisify(execFile); const env = { ...process.env, GIT_AUTHOR_NAME: "Airic", GIT_AUTHOR_EMAIL: "airic@local", GIT_COMMITTER_NAME: "Airic", GIT_COMMITTER_EMAIL: "airic@local" }; const blob = await gitInput(this.#root, ["hash-object", "-w", "--stdin"], JSON.stringify(state), env); const tree = await gitInput(this.#root, ["mktree"], `100644 blob ${blob.trim()}\tstate.json\n`, env); const { stdout: commit } = await run("git", ["commit-tree", tree.trim(), "-m", `airic operating model ${message}`], { cwd: this.#root, env }); try { await run("git", expectedOid ? ["update-ref", this.#ref, commit.trim(), expectedOid] : ["update-ref", this.#ref, commit.trim(), "0000000000000000000000000000000000000000"], { cwd: this.#root, env }); } catch { throw new Error("BaseRevisionConflict"); } }
-  async #ensureGit(): Promise<void> { this.#ready ??= (async () => { await mkdir(this.#root, { recursive: true }); const run = promisify(execFile); try { await run("git", ["rev-parse", "--git-dir"], { cwd: this.#root }); } catch { await run("git", ["init", "--bare"], { cwd: this.#root }); } })(); return this.#ready; }
+  async #ensureGit(): Promise<void> {
+    this.#ready ??= (async () => {
+      await mkdir(this.#root, { recursive: true });
+      const run = promisify(execFile);
+      // A runtime repository may live beneath an application checkout. Checking
+      // `git rev-parse` from that directory would then resolve the parent
+      // checkout and write Airic's private ref into application Git.
+      const ownHead = join(this.#root, "HEAD");
+      const ownConfig = join(this.#root, "config");
+      try { await Promise.all([lstat(ownHead), lstat(ownConfig)]); }
+      catch { await run("git", ["init", "--bare", this.#root], { cwd: dirname(this.#root) }); }
+      const { stdout } = await run("git", ["rev-parse", "--is-bare-repository"], { cwd: this.#root });
+      if (stdout.trim() !== "true") throw new Error(`Airic operating model repository must be bare: ${this.#root}`);
+    })();
+    return this.#ready;
+  }
 }
 
 interface GitOperatingModelState { snapshots: Record<string, OperatingModelSnapshot>; active: Record<string, OperatingModelRevisionRef>; proposals: Record<string, OperatingModelProposal>; reviews: Record<string, OperatingModelReview>; operations: Record<string, OperatingModelOperation> }

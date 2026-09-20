@@ -3,7 +3,7 @@ import { prepareAction, settleAction, type Action } from "../domain/action.js";
 import { createWork, reviseWork, type Work } from "../domain/work.js";
 import { bindingRef, DomainInvocationError, type CommandReceipt, type DomainProvider, type TrustedCallContext } from "../integration/contracts.js";
 import { assembleContext, hash, type TurnContextRef } from "./context.js";
-import type { AgentHarness, HarnessTool, LiveWorkEvent, RuntimeEvent, RuntimeStore, TraceEvent, WorkEvidenceExtraction } from "./ports.js";
+import type { AgentHarness, HarnessTool, LiveWorkEvent, RuntimeEvent, RuntimeStore, TraceEvent, WorkActivity, WorkEvidenceExtraction } from "./ports.js";
 import type { OperatingModelAuthoringPort, OperatingModelChangeSet, OperatingModelId, OperatingModelRevisionRef, OperatingModelRuntimePort } from "./operating-model.js";
 import { loadWorkDefinition, type WorkDefinition } from "./work-definition.js";
 import type { ModuleRegistry } from "./module.js";
@@ -38,7 +38,7 @@ export class AiricRuntime {
   readonly #listeners = new Set<(event: TraceEvent) => void>();
   readonly #liveListeners = new Set<(event: LiveWorkEvent) => void>();
   readonly #controllers = new Map<string, AbortController>();
-  readonly #activeTurns = new Set<string>();
+  readonly #activeTurns = new Map<string, string>();
   readonly #turnRevisions = new Map<string, OperatingModelRevisionRef>();
   readonly #now: () => Date;
   readonly #id: () => string;
@@ -70,6 +70,10 @@ export class AiricRuntime {
   getTrace(workId: string): readonly TraceEvent[] { return this.#trace.filter((event) => event.workId === workId); }
   subscribe(listener: (event: TraceEvent) => void): () => void { this.#listeners.add(listener); return () => this.#listeners.delete(listener); }
   subscribeLive(listener: (event: LiveWorkEvent) => void): () => void { this.#liveListeners.add(listener); return () => this.#liveListeners.delete(listener); }
+  getWorkActivity(workId: string): WorkActivity {
+    const startedAt = this.#activeTurns.get(workId);
+    return startedAt ? { active: true, startedAt } : { active: false };
+  }
 
   async createWork(input: CreateWorkInput, actor: TrustedCallContext["actor"]): Promise<Work> {
     if (!actor?.id) throw new Error("A trusted actor is required to create Work");
@@ -107,7 +111,7 @@ export class AiricRuntime {
     const work = this.#requireOpenWork(workId);
     await this.#authorize(actor, work, "prompt");
     if (this.#activeTurns.has(workId)) throw new Error(`WorkBusy: ${workId}`);
-    this.#activeTurns.add(workId);
+    this.#activeTurns.set(workId, this.#now().toISOString());
     try { return await this.#runTurn(work, message, actor, turnContextRefs); }
     finally { this.#activeTurns.delete(workId); }
   }
@@ -115,21 +119,22 @@ export class AiricRuntime {
   async #runTurn(work: Work, message: string, actor: TrustedCallContext["actor"], turnContextRefs?: readonly TurnContextRef[]): Promise<{ text: string; result?: unknown }> {
     const workId = work.id;
     this.#turnRevisions.set(workId, await this.options.operatingModels.resolveActive(work.workType));
-    await this.#traceEvent(workId, "message.user", actor.id, { text: message, ...(turnContextRefs?.length ? { turnContextRefs } : {}) });
-    const domains = this.#domainsFor(work);
-    const sequence = this.#trace.filter((event) => event.workId === workId && event.type === "context.assembled").length + 1;
-    const initial = await this.#assembleAndTrace(work, domains, sequence, undefined, turnContextRefs);
-    const definition = initial.definition;
-    const envelope = initial.envelope;
-    const tools = this.#toolsFor(work, definition, domains, actor);
-    let delivered = false;
-    let deliveredDigest: string | undefined;
-    let expectedEnvelope = envelope;
-    let contextSequence = sequence;
-    const gatedTools = tools.map((tool): HarnessTool => ({ ...tool, invoke: async (value, requestId) => { if (!delivered) throw new Error("Context and tool delivery has not been confirmed"); await this.#authorize(actor, this.#requireOpenWork(workId), "capability"); return tool.invoke(value, requestId); } }));
-    const controller = new AbortController();
-    this.#controllers.set(workId, controller);
     try {
+      await this.#traceEvent(workId, "turn.started", "runtime", {});
+      await this.#traceEvent(workId, "message.user", actor.id, { text: message, ...(turnContextRefs?.length ? { turnContextRefs } : {}) });
+      const domains = this.#domainsFor(work);
+      const sequence = this.#trace.filter((event) => event.workId === workId && event.type === "context.assembled").length + 1;
+      const initial = await this.#assembleAndTrace(work, domains, sequence, undefined, turnContextRefs);
+      const definition = initial.definition;
+      const envelope = initial.envelope;
+      const tools = this.#toolsFor(work, definition, domains, actor);
+      let delivered = false;
+      let deliveredDigest: string | undefined;
+      let expectedEnvelope = envelope;
+      let contextSequence = sequence;
+      const gatedTools = tools.map((tool): HarnessTool => ({ ...tool, invoke: async (value, requestId) => { if (!delivered) throw new Error("Context and tool delivery has not been confirmed"); await this.#authorize(actor, this.#requireOpenWork(workId), "capability"); return tool.invoke(value, requestId); } }));
+      const controller = new AbortController();
+      this.#controllers.set(workId, controller);
       const result = await this.options.harness.run({
         workId, workInput: work.input, message, envelope, tools: gatedTools, signal: controller.signal,
         refreshContext: async () => {
@@ -157,13 +162,16 @@ export class AiricRuntime {
       });
       if (!delivered || deliveredDigest !== expectedEnvelope.digest) throw new Error("Harness returned without confirming the latest ContextEnvelope delivery");
       await this.#traceEvent(workId, "message.agent", "agent", { text: result.text, result: result.result });
+      await this.#traceEvent(workId, "turn.completed", "runtime", { text: result.text });
       return result;
+    } catch (error) {
+      await this.#traceEvent(workId, "turn.failed", "runtime", { message: error instanceof Error ? error.message : String(error) });
+      throw error;
     } finally {
       this.#controllers.delete(workId);
       this.#turnRevisions.delete(workId);
     }
   }
-
   async interrupt(workId: string): Promise<void> {
     this.#controllers.get(workId)?.abort();
     await this.options.harness.interrupt?.(workId);
@@ -190,6 +198,11 @@ export class AiricRuntime {
   }
 
   async completeWork(workId: string, result: unknown): Promise<Work> {
+    if (this.#activeTurns.has(workId)) throw new Error(`WorkBusy: ${workId}`);
+    return this.#completeWork(workId, result);
+  }
+
+  async #completeWork(workId: string, result: unknown): Promise<Work> {
     const work = this.#requireOpenWork(workId);
     const definition = await this.#definitionFor(work);
     const trace = [...this.getTrace(workId)];
@@ -337,7 +350,7 @@ export class AiricRuntime {
         { name: "airic_record_operating_model_candidate", description: "Submit a structure-validated Operating Model change set for human review.", inputSchema: { type: "object", properties: { target: { type: "object" }, baseRevision: { type: "object" }, changeSet: { type: "object" }, rationale: { type: "string" }, evidenceRefs: { type: "array" }, supersedesProposalId: { type: "string" } }, required: ["target", "baseRevision", "changeSet", "rationale", "evidenceRefs"] }, invoke: async (value) => this.recordOperatingModelCandidate(work.id, value as Parameters<AiricRuntime["recordOperatingModelCandidate"]>[1]) },
       ] satisfies HarnessTool[] : []),
       { name: "airic_record_reflection_candidate", description: "Store a reviewable candidate diff linked to trace evidence.", inputSchema: { type: "object", properties: { targetKind: { enum: ["operating-model", "domain", "associated"] }, targetPath: { type: "string" }, target: { type: "object", properties: { moduleId: { type: "string" }, workTypeId: { type: "string" } }, required: ["moduleId", "workTypeId"] }, baseCommit: { type: "string" }, baseContentDigest: { type: "string" }, diff: { type: "string" }, rationale: { type: "string" }, evidenceEventIds: { type: "array", items: { type: "string" } } }, required: ["targetKind", "targetPath", "baseContentDigest", "diff", "rationale", "evidenceEventIds"] }, invoke: async (value) => { if (work.workType.workTypeId !== "reflection") throw new Error("Reflection candidates can only be produced by a Reflection Work"); return this.recordReflectionCandidate(work.id, value as Parameters<AiricRuntime["recordReflectionCandidate"]>[1]); } },
-      { name: "airic_complete_work", description: "Complete the Work with a structured result after required domain effects are confirmed.", inputSchema: { type: "object", properties: { result: {} }, required: ["result"] }, invoke: async (value) => this.completeWork(work.id, (value as { result: unknown }).result) },
+      { name: "airic_complete_work", description: "Complete the Work with a structured result after required domain effects are confirmed.", inputSchema: { type: "object", properties: { result: {} }, required: ["result"] }, invoke: async (value) => this.#completeWork(work.id, (value as { result: unknown }).result) },
     ];
   }
 

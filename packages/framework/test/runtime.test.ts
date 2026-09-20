@@ -288,4 +288,31 @@ describe("AiricRuntime", () => {
     await expect(runtime.sendMessage(bound.id, "Read", { id: "user", scopes: [] })).rejects.toThrow("BindingChanged");
     expect(runtime.getTrace(source.id).some((event) => event.type === "reflection.proposed")).toBe(true);
   });
+
+  it("reports turn activity and traces the turn lifecycle", async () => {
+    const { runtime } = fixture(); await runtime.open();
+    const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Observe activity" }, creator);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const original = runtime.options.harness;
+    runtime.options.harness = { capabilities: () => original.capabilities(), run: async (input: Parameters<typeof original.run>[0]) => { await gate; return original.run(input); } };
+    const pending = runtime.sendMessage(work.id, "Start", { id: "user", scopes: [] });
+    for (let index = 0; index < 200 && !runtime.getWorkActivity(work.id).active; index += 1) await new Promise((resolve) => setTimeout(resolve, 1));
+    expect(runtime.getWorkActivity(work.id)).toMatchObject({ active: true });
+    expect(runtime.getTrace(work.id).some((event) => event.type === "turn.started")).toBe(true);
+    await expect(runtime.completeWork(work.id, {})).rejects.toThrow(`WorkBusy: ${work.id}`);
+    release();
+    await pending;
+    expect(runtime.getWorkActivity(work.id)).toEqual({ active: false });
+    expect(runtime.getTrace(work.id).some((event) => event.type === "turn.completed")).toBe(true);
+  });
+
+  it("traces a failed turn and releases the activity lock", async () => {
+    const { runtime } = fixture(); await runtime.open();
+    const work = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Fail safely" }, creator);
+    runtime.options.harness = { capabilities: () => ({ resume: false, interrupt: false, contextHook: false, compactionTrace: false }), run: async () => { throw new Error("Harness exploded"); } };
+    await expect(runtime.sendMessage(work.id, "Fail", { id: "user", scopes: [] })).rejects.toThrow("Harness exploded");
+    expect(runtime.getTrace(work.id).some((event) => event.type === "turn.failed")).toBe(true);
+    expect(runtime.getWorkActivity(work.id)).toEqual({ active: false });
+  });
 });

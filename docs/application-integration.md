@@ -19,4 +19,18 @@ Cross-module code imports only the provider's `public/` contracts. The consumer 
 
 The host must establish a trusted actor before exposing Work APIs. The same host-owned access policy gates HTTP, SSE, runtime capability calls and optional ACP WebSocket sessions. `Work.createdBy` is set from that actor at creation; records without a trusted creator are not implicitly claimed by a browser user. `@airic/acp` adds Agent interaction only, while each module's Application Services remain authoritative for business data, approvals and exports. See the [ACP browser contract](./acp-browser-contract.md).
 
+## Work HTTP and real-time events
+
+The host mounts the Airic HTTP API under its base path (default `/api/airic`). Every route requires the host's `authenticate` actor and its `authorize` policy; the host may audit sensitive trace reads through `onTraceRead`.
+
+- `POST /works/{id}/messages` sends one turn synchronously and returns the final `{ text }`; it remains the canonical send path.
+- `GET /works/{id}/activity` reports the in-flight turn as `{ active, startedAt? }`.
+- A Work cannot be completed while its turn is active; completion returns the same `WorkBusy` conflict used for a concurrent prompt.
+- `GET /works/{id}/events` is a per-Work Server-Sent Events stream. It authenticates and audits the read, replays the Work's persistent trace (resuming after `?lastEventId=<eventId>` or `Last-Event-ID`), emits an `event: activity` snapshot, then streams further updates. Every delivered event is re-authenticated and re-authorized, and a revoked Work ends the stream (fail closed). Frame channels: `event: trace` (`id:` is the trace `eventId`, `data:` is the `TraceEvent`), `event: live` (transient `{ workId, type: "text-delta", text }` deltas) and `event: activity`.
+- `GET /events` remains the host-wide stream and filters to the Works the actor may read.
+
+The runtime records explicit turn lifecycle events `turn.started`, `turn.completed` and `turn.failed` in the persistent trace, and exposes transient text deltas through `subscribeLive`. Canonical history is always the trace; live deltas are display-only.
+
+Because `EventSource` cannot send an `Authorization` header, a browser client consumes `/works/{id}/events` with a bearer-authenticated `fetch` and a streaming reader, then parses the SSE frames itself.
+
 Use the version-matched [development skill](../skills/airic-app-development/SKILL.md) before changing an application boundary.

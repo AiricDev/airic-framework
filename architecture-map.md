@@ -1,6 +1,6 @@
 # Airic Framework Architecture Map
 
-- Last updated: 2026-09-15
+- Last updated: 2026-09-18
 - Architectural decision owners: Airic maintainers
 
 ## Ownership
@@ -20,8 +20,8 @@
 
 | Behavior | Owner | Verification |
 |---|---|---|
-| Work creator, authority and per-turn serialization | `packages/framework/src/application/runtime.ts` | `packages/framework/test/runtime.test.ts` |
-| HTTP/SSE filtering and access checks | `packages/server/src/index.ts` | `packages/server/test/server.test.ts` |
+| Work creator, authority, per-turn serialization and turn activity | `packages/framework/src/application/runtime.ts` | `packages/framework/test/runtime.test.ts` |
+| HTTP/SSE filtering and access checks, including the per-Work event stream and turn-activity query | `packages/server/src/index.ts` | `packages/server/test/server.test.ts` |
 | Sensitive trace read audit hook, Reflection source bindings, Operating Model candidate provenance and repository APIs | `packages/server/src/index.ts`, `packages/framework/src/application/runtime.ts`, `packages/framework/src/application/operating-model.ts` | server, runtime and operating-model tests |
 | Host-extracted Work evidence, bounded binary upload and on-demand Agent reading | `packages/framework/src/application/runtime.ts`, `packages/server/src/index.ts`, `packages/client/src/index.ts` | runtime, server and client tests |
 | ACP bind, prompt, cancel, replay | `packages/acp/src/index.ts` | `packages/acp/test/gateway.test.ts` |

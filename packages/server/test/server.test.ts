@@ -3,7 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AiricRuntime, TraceEvent } from "@airic/framework";
+import type { AiricRuntime, LiveWorkEvent, TraceEvent } from "@airic/framework";
 import { createAiricHttpHandler, createAiricServer, createStaticHandler } from "../src/index.js";
 const authenticated = async () => ({ id: "browser-user", scopes: ["work:write"] });
 const authorize = () => true;
@@ -185,6 +185,55 @@ describe("Airic HTTP hosting", () => {
     const app = createAiricServer({ runtime: fakeRuntime(), port: 0 }); const address = await app.listen(); closing.push(() => app.close());
     expect(await (await fetch(`http://${address.host}:${address.port}/api/health`)).json()).toEqual({ ok: true });
   });
+  it("reports per-Work activity and enforces Work read access", async () => {
+    const runtime = fakeRuntime({ getWork: () => testWork, getWorkActivity: () => ({ active: true, startedAt: "2026-01-01T00:00:00.000Z" }) });
+    const permitted = createAiricHttpHandler({ runtime, authenticate: authenticated, authorize: () => true });
+    const denied = createAiricHttpHandler({ runtime, authenticate: authenticated, authorize: () => false });
+    const allowedBase = await listen((request, response) => { void permitted.handle(request, response); });
+    const deniedBase = await listen((request, response) => { void denied.handle(request, response); });
+    expect(await (await fetch(`${allowedBase}/api/airic/works/work-1/activity`)).json()).toEqual({ active: true, startedAt: "2026-01-01T00:00:00.000Z" });
+    expect((await fetch(`${deniedBase}/api/airic/works/work-1/activity`)).status).toBe(403);
+    await permitted.close(); await denied.close();
+  });
+
+  it("streams one Work's trace and live deltas with cached connection authentication and per-event authorization", async () => {
+    const events: TraceEvent[] = [traceEvent("e1"), traceEvent("e2"), traceEvent("e3")];
+    let authenticationCalls = 0;
+    const countAuthentication = async () => { authenticationCalls += 1; return { id: "browser-user", scopes: ["work:write"] }; };
+    let authorized = true;
+    let publish: ((event: TraceEvent) => void) | undefined;
+    let publishLive: ((event: LiveWorkEvent) => void) | undefined;
+    const runtime = fakeRuntime({ listWorks: () => [testWork], getWork: () => testWork, getTrace: () => events, getWorkActivity: () => ({ active: false }),
+      subscribe: (listener: (event: TraceEvent) => void) => { publish = listener; return () => { publish = undefined; }; },
+      subscribeLive: (listener: (event: LiveWorkEvent) => void) => { publishLive = listener; return () => { publishLive = undefined; }; } });
+    const airic = createAiricHttpHandler({ runtime, authenticate: countAuthentication, sseAuthenticationTtlMs: 60_000, authorize: (_actor, resource) => resource.kind !== "work" || authorized });
+    const base = await listen((request, response) => { void airic.handle(request, response).then((handled) => { if (!handled) { response.writeHead(404); response.end(); } }); });
+
+    const stream = await fetch(`${base}/api/airic/works/work-1/events?lastEventId=e2`);
+    expect(stream.headers.get("content-type")).toBe("text/event-stream");
+    const reader = stream.body!.getReader(); const decoder = new TextDecoder();
+    let text = "";
+    const readChunk = async (): Promise<boolean> => {
+      const result = await Promise.race([reader.read(), new Promise<{ done: boolean; value?: Uint8Array }>((resolve) => setTimeout(() => resolve({ done: false }), 25))]);
+      if (result.value) text += decoder.decode(result.value);
+      return !result.done;
+    };
+    for (let index = 0; index < 40 && !text.includes(": connected"); index += 1) await readChunk();
+    expect(text).toContain("\"eventId\":\"e3\"");
+    expect(text).not.toContain("\"eventId\":\"e1\"");
+    expect(text).toContain("event: activity");
+    for (let index = 0; index < 40 && !text.includes("event: live"); index += 1) { publishLive?.({ workId: "work-1", type: "text-delta", text: "hello" }); await readChunk(); }
+    expect(text).toContain("\"text\":\"hello\"");
+    expect(authenticationCalls).toBe(1);
+
+    authorized = false;
+    publish?.(traceEvent("revoked"));
+    let ended = false;
+    for (let index = 0; index < 40 && !ended; index += 1) ended = !(await readChunk());
+    expect(ended).toBe(true);
+    await airic.close();
+  });
+
 });
 
 function traceEvent(eventId: string): TraceEvent {
@@ -193,7 +242,7 @@ function traceEvent(eventId: string): TraceEvent {
 
 function fakeRuntime(overrides: Record<string, unknown> = {}): AiricRuntime {
   return {
-    subscribe: () => () => {}, listWorks: () => [], getTrace: () => [], getWork: () => undefined,
+    subscribe: () => () => {}, subscribeLive: () => () => {}, listWorks: () => [], getTrace: () => [], getWork: () => undefined, getWorkActivity: () => ({ active: false }),
     createWork: async () => ({}), sendMessage: async () => ({ text: "ok" }), completeWork: async () => ({}), interrupt: async () => {},
     recordReflectionCandidate: async () => ({}), attachSourceWork: async () => ({}), attachEvidence: async () => ({ ref: {} }),
     options: { harness: { capabilities: () => ({ resume: false, interrupt: false, contextHook: false, compactionTrace: false }), run: async () => ({ text: "" }) } },
