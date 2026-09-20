@@ -59,7 +59,7 @@ export class AiricClient {
   getWork(id: string): Promise<WorkDetailDto> { return this.#get(`/works/${encodeURIComponent(id)}`); }
   getTrace(id: string): Promise<TraceDto[]> { return this.#get(`/works/${encodeURIComponent(id)}/trace`); }
   getAgentConnection(id: string): Promise<AgentConnectionDto> { return this.#get(`/works/${encodeURIComponent(id)}/agent-connection`); }
-  sendMessage(id: string, message: string, turnContextRefs?: readonly { namespace: string; resourceType: string; resourceId: string; revision?: string; selection?: Readonly<Record<string, unknown>> }[]): Promise<{ text: string; result?: unknown }> { return this.#post(`/works/${encodeURIComponent(id)}/messages`, { message, ...(turnContextRefs?.length ? { turnContextRefs } : {}) }); }
+  sendMessage(id: string, message: string, turnContextRefs?: readonly { namespace: string; resourceType: string; resourceId: string; revision?: string; selection?: Readonly<Record<string, unknown>> }[], evidenceDigests?: readonly string[]): Promise<{ text: string; result?: unknown }> { return this.#post(`/works/${encodeURIComponent(id)}/messages`, { message, ...(turnContextRefs?.length ? { turnContextRefs } : {}), ...(evidenceDigests !== undefined ? { evidenceDigests } : {}) }); }
   interrupt(id: string): Promise<{ interrupted: boolean }> { return this.#post(`/works/${encodeURIComponent(id)}/interrupt`, {}); }
   complete(id: string, result: unknown): Promise<WorkDto> { return this.#post(`/works/${encodeURIComponent(id)}/complete`, { result }); }
   createReflection(input: CreateWorkInput): Promise<WorkDto> { return this.createWork(input); }

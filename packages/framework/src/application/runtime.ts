@@ -107,27 +107,28 @@ export class AiricRuntime {
     await this.#persist([{ kind: "work.saved", work: revised }]); await this.#traceEvent(workId, "context.source-work-attached", actor.id, { sourceWorkId }); return revised;
   }
 
-  async sendMessage(workId: string, message: string, actor: TrustedCallContext["actor"], turnContextRefs?: readonly TurnContextRef[]): Promise<{ text: string; result?: unknown }> {
+  async sendMessage(workId: string, message: string, actor: TrustedCallContext["actor"], turnContextRefs?: readonly TurnContextRef[], evidenceDigests?: readonly string[]): Promise<{ text: string; result?: unknown }> {
     const work = this.#requireOpenWork(workId);
     await this.#authorize(actor, work, "prompt");
     if (this.#activeTurns.has(workId)) throw new Error(`WorkBusy: ${workId}`);
     this.#activeTurns.set(workId, this.#now().toISOString());
-    try { return await this.#runTurn(work, message, actor, turnContextRefs); }
+    try { return await this.#runTurn(work, message, actor, turnContextRefs, evidenceDigests); }
     finally { this.#activeTurns.delete(workId); }
   }
 
-  async #runTurn(work: Work, message: string, actor: TrustedCallContext["actor"], turnContextRefs?: readonly TurnContextRef[]): Promise<{ text: string; result?: unknown }> {
+  async #runTurn(work: Work, message: string, actor: TrustedCallContext["actor"], turnContextRefs?: readonly TurnContextRef[], evidenceDigests?: readonly string[]): Promise<{ text: string; result?: unknown }> {
     const workId = work.id;
     this.#turnRevisions.set(workId, await this.options.operatingModels.resolveActive(work.workType));
     try {
       await this.#traceEvent(workId, "turn.started", "runtime", {});
-      await this.#traceEvent(workId, "message.user", actor.id, { text: message, ...(turnContextRefs?.length ? { turnContextRefs } : {}) });
+      this.#evidenceEvents(workId, evidenceDigests);
+      await this.#traceEvent(workId, "message.user", actor.id, { text: message, ...(turnContextRefs?.length ? { turnContextRefs } : {}), ...(evidenceDigests !== undefined ? { evidenceDigests: [...evidenceDigests] } : {}) });
       const domains = this.#domainsFor(work);
       const sequence = this.#trace.filter((event) => event.workId === workId && event.type === "context.assembled").length + 1;
-      const initial = await this.#assembleAndTrace(work, domains, sequence, undefined, turnContextRefs);
+      const initial = await this.#assembleAndTrace(work, domains, sequence, undefined, turnContextRefs, evidenceDigests);
       const definition = initial.definition;
       const envelope = initial.envelope;
-      const tools = this.#toolsFor(work, definition, domains, actor);
+      const tools = this.#toolsFor(work, definition, domains, actor, evidenceDigests);
       let delivered = false;
       let deliveredDigest: string | undefined;
       let expectedEnvelope = envelope;
@@ -141,7 +142,7 @@ export class AiricRuntime {
           await this.#authorize(actor, this.#requireWork(workId), "prompt");
           contextSequence += 1;
           const refreshedWork = this.#requireWork(workId);
-          const refreshed = (await this.#assembleAndTrace(refreshedWork, this.#domainsFor(refreshedWork), contextSequence, "before-model-call", turnContextRefs)).envelope;
+          const refreshed = (await this.#assembleAndTrace(refreshedWork, this.#domainsFor(refreshedWork), contextSequence, "before-model-call", turnContextRefs, evidenceDigests)).envelope;
           expectedEnvelope = refreshed;
           return refreshed;
         },
@@ -308,7 +309,7 @@ export class AiricRuntime {
     return settled;
   }
 
-  #toolsFor(work: Work, definition: WorkDefinition, domains: readonly DomainProvider[], actor: TrustedCallContext["actor"]): HarnessTool[] {
+  #toolsFor(work: Work, definition: WorkDefinition, domains: readonly DomainProvider[], actor: TrustedCallContext["actor"], evidenceDigests?: readonly string[]): HarnessTool[] {
     const allowed = new Set(definition.manifest.capabilities.allowed);
     const capabilityTools = domains.flatMap((module) => module.capabilities.filter((capability) => allowed.has(capability.id)).map((capability): HarnessTool => ({
       name: toolName(capability.id), description: capability.description, inputSchema: capability.inputSchema,
@@ -319,7 +320,7 @@ export class AiricRuntime {
       ...(this.options.extractEvidence ? [
         { name: "airic_list_work_evidence", description: "List Work documents, or list up to 50 block locators of one document (digest, offset). No document text is returned.", inputSchema: { type: "object", properties: { digest: { type: "string" }, offset: { type: "integer", minimum: 0 } }, additionalProperties: false }, invoke: async (value: unknown) => {
           const input = value as { digest?: string; offset?: number };
-          const events = this.getTrace(work.id).filter((event) => event.type === "context.external");
+          const events = this.#evidenceEvents(work.id, evidenceDigests);
           if (!input.digest) return events.map((event) => { const item = event.payload as { name: string; mediaType: string; object: { digest: string; size: number }; extraction?: { blocks: number; warnings: readonly string[] } }; return { name: item.name, mediaType: item.mediaType, digest: item.object.digest, size: item.object.size, blocks: item.extraction?.blocks ?? 0, warnings: item.extraction?.warnings ?? ["No readable text projection"] }; });
           const event = events.find((item) => (item.payload as { object?: { digest?: string } }).object?.digest === input.digest);
           const extraction = (event?.payload as { extraction?: { digest: string } } | undefined)?.extraction;
@@ -331,7 +332,7 @@ export class AiricRuntime {
         { name: "airic_read_work_evidence", description: "Read one extracted document block by its Work-bound digest and locator. Never infer image or scanned-page content from extracted text.", inputSchema: { type: "object", properties: { digest: { type: "string" }, locator: { type: "string" }, reason: { type: "string" } }, required: ["digest", "locator", "reason"], additionalProperties: false }, invoke: async (value: unknown) => {
           const input = value as { digest: string; locator: string; reason: string };
           if (!/^[a-f0-9]{64}$/u.test(input.digest) || !input.reason?.trim() || input.reason.length > 500) throw new Error("Invalid evidence read request");
-          const event = this.getTrace(work.id).find((item) => item.type === "context.external" && (item.payload as { object?: { digest?: string } }).object?.digest === input.digest);
+          const event = this.#evidenceEvents(work.id, evidenceDigests).find((item) => (item.payload as { object?: { digest?: string } }).object?.digest === input.digest);
           const extraction = (event?.payload as { extraction?: { digest: string } } | undefined)?.extraction;
           if (!extraction) throw new Error("No readable extraction for this Work evidence");
           const projection = JSON.parse(new TextDecoder().decode(await this.options.store.getObject(extraction.digest))) as WorkEvidenceExtraction;
@@ -416,7 +417,7 @@ export class AiricRuntime {
     const ref = this.#turnRevisions.get(work.id) ?? await this.options.operatingModels.resolveActive(target);
     return loadWorkDefinition(await this.options.operatingModels.readRevision(target, ref));
   }
-  async #assembleAndTrace(work: Work, domains: readonly DomainProvider[], sequence: number, reason?: string, turnContextRefs?: readonly TurnContextRef[]): Promise<{ definition: WorkDefinition; envelope: ReturnType<typeof assembleContext> }> {
+  async #assembleAndTrace(work: Work, domains: readonly DomainProvider[], sequence: number, reason?: string, turnContextRefs?: readonly TurnContextRef[], evidenceDigests?: readonly string[]): Promise<{ definition: WorkDefinition; envelope: ReturnType<typeof assembleContext> }> {
     const definition = await this.#definitionFor(work);
     const operatingModelRevision = this.#turnRevisions.get(work.id) ?? await this.options.operatingModels.resolveActive(work.workType);
     const allowed = new Set(definition.manifest.capabilities.allowed);
@@ -434,9 +435,17 @@ export class AiricRuntime {
     }
     await this.#traceEvent(work.id, "context.assembled", "runtime", {
       envelopeId: envelope.envelopeId, digest: envelope.digest, workType: envelope.workType,
-      sources: envelope.provenance, availableCapabilities: envelope.availableCapabilities, evidence, operatingModelRevision, ...(reason ? { reason } : {}), ...(turnContextRefs?.length ? { turnContextRefs } : {}),
+      sources: envelope.provenance, availableCapabilities: envelope.availableCapabilities, evidence, operatingModelRevision, ...(reason ? { reason } : {}), ...(turnContextRefs?.length ? { turnContextRefs } : {}), ...(evidenceDigests !== undefined ? { evidenceDigests: [...evidenceDigests] } : {}),
     });
     return { definition, envelope };
+  }
+  #evidenceEvents(workId: string, evidenceDigests?: readonly string[]): readonly TraceEvent[] {
+    const events = this.getTrace(workId).filter((event) => event.type === "context.external");
+    if (evidenceDigests === undefined) return events;
+    const requested = new Set(evidenceDigests);
+    const scoped = events.filter((event) => requested.has((event.payload as { object?: { digest?: string } }).object?.digest ?? ""));
+    if (scoped.length !== requested.size) throw new Error("EvidenceNotAttachedToWork");
+    return scoped;
   }
   #requireWork(id: string): Work { return this.#works.get(id) ?? fail(`Unknown Work ${id}`); }
   #isReflectionRef(ref: Work["workType"]): boolean { return this.options.operatingModelAuthoringWorkTypes?.reflection.some((item) => item.moduleId === ref.moduleId && item.workTypeId === ref.workTypeId) ?? false; }
