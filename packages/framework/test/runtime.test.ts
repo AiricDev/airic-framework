@@ -25,7 +25,18 @@ const reflectionManifest = {
   completion: { requiredCapabilities: [] },
 } as const;
 
-function fixture(commandMode: "committed" | "rejected" | "unknown" = "committed") {
+const userCompletedManifest = {
+  ...manifest,
+  completion: {
+    mode: "user",
+    requiredCapabilities: [],
+  },
+} as const;
+
+function fixture(
+  commandMode: "committed" | "rejected" | "unknown" = "committed",
+  workManifest: unknown = manifest,
+) {
   const receipts = new Map<string, CommandInspection>();
   let commandInvocations = 0;
   const domain: DomainProvider = {
@@ -45,7 +56,7 @@ function fixture(commandMode: "committed" | "rejected" | "unknown" = "committed"
   };
   const definitions = new MemoryModuleSource(
     Object.fromEntries(Object.entries(moduleManifests).map(([id, value]) => [id, { manifest: value }])),
-    { "cases/assist": { manifest: structuredClone(manifest), documents: { "process.md": "Follow the objective.", "precedent.md": "Either order is valid." } }, "development/reflection": { manifest: structuredClone(reflectionManifest), documents: { "reflection.md": "Inspect trace evidence." } } },
+    { "cases/assist": { manifest: structuredClone(workManifest), documents: { "process.md": "Follow the objective.", "precedent.md": "Either order is valid." } }, "development/reflection": { manifest: structuredClone(reflectionManifest), documents: { "reflection.md": "Inspect trace evidence." } } },
   );
   const modules = new ModuleRegistry(definitions);
   modules.registerManifest(moduleManifests.cases);
@@ -61,6 +72,26 @@ function fixture(commandMode: "committed" | "rejected" | "unknown" = "committed"
 }
 
 describe("AiricRuntime", () => {
+  it("keeps user-completed Work open across turns without exposing agent completion", async () => {
+    const { runtime, harness } = fixture("committed", userCompletedManifest);
+    await runtime.open();
+    const work = await runtime.createWork(
+      { moduleId: "cases", workTypeId: "assist", objective: "Ongoing session" },
+      creator,
+    );
+    harness.enqueue({ text: "First turn" }, { text: "Second turn" });
+
+    await runtime.sendMessage(work.id, "Begin", creator);
+    await runtime.sendMessage(work.id, "Continue", creator);
+
+    expect(runtime.getWork(work.id)?.status).toBe("open");
+    expect(harness.calls.map((call) => call.workId)).toEqual([work.id, work.id]);
+    expect(harness.delivered.flatMap((delivery) => delivery.registeredTools))
+      .not.toContain("airic_complete_work");
+    await runtime.completeWork(work.id, { closedBy: "user" });
+    expect(runtime.getWork(work.id)?.status).toBe("completed");
+  });
+
   it("binds Reflection trajectories append-only and rechecks access before each trace read", async () => {
     const { runtime, harness } = fixture(); await runtime.open();
     const source = await runtime.createWork({ moduleId: "cases", workTypeId: "assist", objective: "Source" }, creator);

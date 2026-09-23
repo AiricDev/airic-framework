@@ -1,0 +1,43 @@
+name: Release packages
+
+# Packs the @airic/* workspace packages as npm tarballs and attaches them to a
+# GitHub Release. Consumers (CertReporter) pin a release and verify tarball
+# sha256 checksums against their own lock file — the `checksums.txt` asset is
+# the reference for updating that lock.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build packages
+        run: pnpm run build
+      - name: Pack all public packages
+        run: pnpm run pack:all
+      - name: Verify packed artifacts
+        run: pnpm run verify:pack
+      - name: Write checksums
+        run: cd artifacts/packs && sha256sum *.tgz manifest.json > checksums.txt
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/packs/*.tgz
+            artifacts/packs/manifest.json
+            artifacts/packs/checksums.txt

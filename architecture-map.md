@@ -21,6 +21,7 @@
 | Behavior | Owner | Verification |
 |---|---|---|
 | Work creator, authority, per-turn serialization and turn activity | `packages/framework/src/application/runtime.ts` | `packages/framework/test/runtime.test.ts` |
+| Work completion ownership (`completion.mode`: agent or user) and completion evidence | `packages/framework/src/application/work-definition.ts`, `packages/framework/src/application/runtime.ts` | `packages/framework/test/runtime.test.ts` |
 | HTTP/SSE filtering and access checks, including the per-Work event stream and turn-activity query | `packages/server/src/index.ts` | `packages/server/test/server.test.ts` |
 | Sensitive trace read audit hook, Reflection source bindings, Operating Model candidate provenance and repository APIs | `packages/server/src/index.ts`, `packages/framework/src/application/runtime.ts`, `packages/framework/src/application/operating-model.ts` | server, runtime and operating-model tests |
 | Host-extracted Work evidence, bounded binary upload and on-demand Agent reading | `packages/framework/src/application/runtime.ts`, `packages/server/src/index.ts`, `packages/client/src/index.ts` | runtime, server and client tests |
@@ -37,6 +38,7 @@
 - The Application host selects modules and binds a trusted actor and authorization policy; HTTP, SSE, ACP and runtime capability execution check that policy. WorkType imports do not grant user permission.
 - `onTraceRead` hooks let an Application fail closed and durably audit access to sensitive Work traces, including HTTP/SSE and Agent trace retrieval; Framework does not define business-specific trace roles.
 - A WorkType's Operating Model is reloaded on the next turn; Domain release/build/source bindings remain pinned. Airic trace records what was delivered and done.
+- A Work Definition owns completion policy. `completion.mode` defaults to `agent`; `user` keeps the Work open across turns by withholding `airic_complete_work` while preserving explicit host/user completion.
 - Module Domain and Application policy remain independent of Airic, HTTP, React and persistence. Cross-module consumers use public contracts and owner-provided services, not repositories or deep imports.
 - ACP is an interaction projection. Business data, command receipts, review, approval and export remain owned by module Application Services and their repositories.
 - `createHttpDomainProvider` adapts the `airic-domain/v1` protocol to the existing inward `DomainProvider` port. Its host-owned `requestHeaders` signs serialized transport requests only; it carries Work/Action correlation and expected releases, but never makes tool-input identity authoritative. Network loss, timeout and unparseable replies are `unknown` and require inspection/reconciliation.
