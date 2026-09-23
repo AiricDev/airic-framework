@@ -128,8 +128,8 @@ describe("AiricRuntime", () => {
     const first = await runtime.attachEvidence(work.id, { name: "first.txt", mediaType: "text/plain", content: new Uint8Array([1]) });
     const second = await runtime.attachEvidence(work.id, { name: "second.txt", mediaType: "text/plain", content: new Uint8Array([2]) });
     harness.enqueue({ call: { tool: "airic_list_work_evidence", input: {}, requestId: "list" } });
-    await runtime.sendMessage(work.id, "Read only the selected attachment", creator, undefined, [second.digest]);
-    expect(harness.calls().at(-1)?.result).toEqual([{ name: "second.txt", mediaType: "text/plain", digest: second.digest, size: 1, blocks: 1, warnings: [] }]);
+    const result = await runtime.sendMessage(work.id, "Read only the selected attachment", creator, undefined, [second.digest]);
+    expect(result.result).toEqual([{ name: "second.txt", mediaType: "text/plain", digest: second.digest, size: 1, blocks: 1, warnings: [] }]);
     harness.enqueue({ call: { tool: "airic_read_work_evidence", input: { digest: first.digest, locator: "page:1", reason: "Try old attachment" }, requestId: "denied" } });
     await expect(runtime.sendMessage(work.id, "Do not read the old attachment", creator, undefined, [])).rejects.toThrow("No readable extraction");
     expect(runtime.getTrace(work.id).findLast((event) => event.type === "message.user")?.payload).toMatchObject({ evidenceDigests: [] });
